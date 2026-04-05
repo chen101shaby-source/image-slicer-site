@@ -5,7 +5,7 @@ import {
   Download,
   Grid2x2Plus,
   Image as ImageIcon,
-  Move,
+  LoaderCircle,
   Plus,
   Scissors,
   Trash2,
@@ -84,6 +84,10 @@ const RECTANGLE_SIZE_PRESETS = [
   { width: 1200, height: 1600, label: "1200 x 1600", description: "Better for tall products and portrait-style product cards." },
 ] as const;
 
+const MAX_PIECES_PER_IMAGE = 30;
+const MAX_SAVED_PIECES = 150;
+const MAX_UPLOAD_FILE_BYTES = 7 * 1024 * 1024;
+
 type CleanupTool = "paint" | "complete";
 type Locale = "en" | "he";
 type CleanupSelection = {
@@ -92,13 +96,19 @@ type CleanupSelection = {
   endX: number;
   endY: number;
 } | null;
+type SubjectBounds = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+} | null;
 
 const translations = {
   en: {
     builtFor: "Built for clean asset workflows",
-    heroTitle: "Cut one image into clean PNG pieces",
+    heroTitle: "Turn one image into ready-to-use pieces",
     heroCopy:
-      "A focused image slicing workspace for developers, ecommerce teams, and site builders who need fast, reusable PNG assets and shareable hosted image URLs without the clutter.",
+      "Upload one image, cut out what you need, and export clean pieces in a simple workspace that stays out of your way.",
     editingNote: "Guide mode is waiting for you. Click Generate guide slices when the lines are ready.",
     slices: "Slices",
     guides: "Guides",
@@ -134,6 +144,8 @@ const translations = {
     uploadAllCloudinary: "Create Links for All Images",
     copyAllLinks: "Copy All Links",
     copyAllHtml: "Copy All HTML",
+    uploadInProgress: "Uploading...",
+    createLinksInProgress: "Creating links...",
     autoUpload: "Auto Upload new pieces",
     downloadZip: "Download ZIP",
     buildingZip: "Building ZIP...",
@@ -248,6 +260,8 @@ const translations = {
     uploadAllCloudinary: "העלה הכול ל‑Cloudinary",
     copyAllLinks: "העתק את כל הקישורים",
     copyAllHtml: "העתק את כל ה‑HTML",
+    uploadInProgress: "מעלה...",
+    createLinksInProgress: "יוצר קישורים...",
     autoUpload: "העלאה אוטומטית לחתיכות חדשות",
     downloadZip: "הורד ZIP",
     buildingZip: "בונה ZIP...",
@@ -840,6 +854,198 @@ function hexToRgb(hex: string) {
   };
 }
 
+function detectCentralSubject(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  fillColor: { r: number; g: number; b: number },
+  tolerance = 26
+) {
+  const pixelCount = width * height;
+  const edgeSampleStep = Math.max(1, Math.floor(Math.min(width, height) / 40));
+  const backgroundSamples: Array<{ r: number; g: number; b: number }> = [];
+
+  const pushSample = (x: number, y: number) => {
+    const offset = (y * width + x) * 4;
+    if (data[offset + 3] === 0) {
+      return;
+    }
+
+    backgroundSamples.push({
+      r: data[offset],
+      g: data[offset + 1],
+      b: data[offset + 2],
+    });
+  };
+
+  for (let x = 0; x < width; x += edgeSampleStep) {
+    pushSample(x, 0);
+    pushSample(x, height - 1);
+  }
+
+  for (let y = 0; y < height; y += edgeSampleStep) {
+    pushSample(0, y);
+    pushSample(width - 1, y);
+  }
+
+  const averageBackground =
+    backgroundSamples.length > 0
+      ? backgroundSamples.reduce(
+          (acc, sample) => ({
+            r: acc.r + sample.r,
+            g: acc.g + sample.g,
+            b: acc.b + sample.b,
+          }),
+          { r: 0, g: 0, b: 0 }
+        )
+      : fillColor;
+
+  const backgroundColor =
+    backgroundSamples.length > 0
+      ? {
+          r: averageBackground.r / backgroundSamples.length,
+          g: averageBackground.g / backgroundSamples.length,
+          b: averageBackground.b / backgroundSamples.length,
+        }
+      : fillColor;
+
+  const backgroundMask = new Uint8Array(pixelCount);
+  const visitedBackground = new Uint8Array(pixelCount);
+  const queue = new Uint32Array(pixelCount);
+  let head = 0;
+  let tail = 0;
+
+  const backgroundTolerance = Math.max(42, tolerance * 2 + 8);
+  const brightnessTolerance = 28;
+
+  const isBackgroundLike = (index: number) => {
+    const offset = index * 4;
+    const alpha = data[offset + 3];
+    if (alpha === 0) {
+      return true;
+    }
+
+    const red = data[offset];
+    const green = data[offset + 1];
+    const blue = data[offset + 2];
+    const delta =
+      Math.abs(red - backgroundColor.r) +
+      Math.abs(green - backgroundColor.g) +
+      Math.abs(blue - backgroundColor.b);
+    const brightness = (red + green + blue) / 3;
+    const backgroundBrightness = (backgroundColor.r + backgroundColor.g + backgroundColor.b) / 3;
+
+    return delta <= backgroundTolerance && Math.abs(brightness - backgroundBrightness) <= brightnessTolerance;
+  };
+
+  const enqueueIfBackground = (index: number) => {
+    if (visitedBackground[index] === 1 || !isBackgroundLike(index)) {
+      return;
+    }
+
+    visitedBackground[index] = 1;
+    backgroundMask[index] = 1;
+    queue[tail] = index;
+    tail += 1;
+  };
+
+  for (let x = 0; x < width; x += 1) {
+    enqueueIfBackground(x);
+    enqueueIfBackground((height - 1) * width + x);
+  }
+
+  for (let y = 0; y < height; y += 1) {
+    enqueueIfBackground(y * width);
+    enqueueIfBackground(y * width + (width - 1));
+  }
+
+  while (head < tail) {
+    const current = queue[head];
+    head += 1;
+    const x = current % width;
+    const y = Math.floor(current / width);
+
+    if (x > 0) enqueueIfBackground(current - 1);
+    if (x < width - 1) enqueueIfBackground(current + 1);
+    if (y > 0) enqueueIfBackground(current - width);
+    if (y < height - 1) enqueueIfBackground(current + width);
+  }
+
+  const subjectMask = new Uint8Array(pixelCount);
+  const centerX = width / 2;
+  const centerY = height / 2;
+  let seedIndex = -1;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const offset = index * 4;
+      const alpha = data[offset + 3];
+      if (alpha === 0 || backgroundMask[index] === 1) {
+        continue;
+      }
+
+      subjectMask[index] = 1;
+      const distance = (x - centerX) ** 2 + (y - centerY) ** 2;
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        seedIndex = index;
+      }
+    }
+  }
+
+  if (seedIndex === -1) {
+    return null;
+  }
+
+  const componentMask = new Uint8Array(pixelCount);
+  head = 0;
+  tail = 0;
+  queue[tail] = seedIndex;
+  tail += 1;
+  componentMask[seedIndex] = 1;
+
+  let minX = seedIndex % width;
+  let maxX = minX;
+  let minY = Math.floor(seedIndex / width);
+  let maxY = minY;
+
+  while (head < tail) {
+    const current = queue[head];
+    head += 1;
+    const x = current % width;
+    const y = Math.floor(current / width);
+
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+
+    const neighbors = [
+      x > 0 ? current - 1 : -1,
+      x < width - 1 ? current + 1 : -1,
+      y > 0 ? current - width : -1,
+      y < height - 1 ? current + width : -1,
+    ];
+
+    for (const neighbor of neighbors) {
+      if (neighbor === -1 || subjectMask[neighbor] === 0 || componentMask[neighbor] === 1) {
+        continue;
+      }
+
+      componentMask[neighbor] = 1;
+      queue[tail] = neighbor;
+      tail += 1;
+    }
+  }
+
+  return {
+    bounds: { minX, minY, maxX, maxY },
+    mask: componentMask,
+  };
+}
+
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [imageSrc, setImageSrc] = useState<string | null>(null);
@@ -883,15 +1089,20 @@ export default function App() {
   const [cleanupPieceKey, setCleanupPieceKey] = useState<string | null>(null);
   const [cleanupFillColor, setCleanupFillColor] = useState("#ffffff");
   const [cleanupBrushSize, setCleanupBrushSize] = useState(28);
-  const [isCleanupPainting, setIsCleanupPainting] = useState(false);
   const [cleanupHistory, setCleanupHistory] = useState<string[]>([]);
   const [cleanupTool, setCleanupTool] = useState<CleanupTool>("paint");
   const [cleanupOriginalDataUrl, setCleanupOriginalDataUrl] = useState<string | null>(null);
   const [cleanupSelection, setCleanupSelection] = useState<CleanupSelection>(null);
+  const [detectedSubjectBounds, setDetectedSubjectBounds] = useState<SubjectBounds>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const cleanupCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cleanupLastPointRef = useRef<Point | null>(null);
   const cleanupOriginalCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const detectedSubjectMaskRef = useRef<Uint8Array | null>(null);
+  const isCleanupPaintingRef = useRef(false);
+  const cleanupSelectionRef = useRef<CleanupSelection>(null);
+  const cleanupCanvasRectRef = useRef<DOMRect | null>(null);
+  const cleanupSelectionFrameRef = useRef<number | null>(null);
   const noticeTimeoutRef = useRef<number | null>(null);
 
   function applyRectanglePreset(width: number, height: number) {
@@ -899,7 +1110,14 @@ export default function App() {
     setRectangleTargetHeight(height);
   }
 
-  const t = translations[locale];
+  const t = {
+    ...translations[locale],
+    heroTitle: locale === "he" ? "הפוך תמונה אחת לחלקים מוכנים לשימוש" : "Turn one image into ready-to-use pieces",
+    heroCopy:
+      locale === "he"
+        ? "העלה תמונה אחת, חתוך ממנה בדיוק מה שצריך, וייצא חלקים נקיים בסביבת עבודה פשוטה ונעימה."
+        : "Upload one image, cut out what you need, and export clean pieces in a simple workspace that stays out of your way.",
+  };
   const quickGridText = {
     threeByThree: locale === "he" ? "3 על 3" : "3 x 3",
     fourByFour: locale === "he" ? "4 על 4" : "4 x 4",
@@ -919,6 +1137,26 @@ export default function App() {
       ? "למחוק את כל התמונות החתוכות בלבד? התמונה הראשית תישאר."
       : "Delete only the cut images? The main image will stay.";
 
+  const fileTooLargeText = locale === "he" ? "גודל התמונה המקסימלי הוא 7MB." : "The maximum image size is 7MB.";
+  const perImageLimitText =
+    locale === "he"
+      ? `אפשר ליצור עד ${MAX_PIECES_PER_IMAGE} חיתוכים לכל תמונה.`
+      : `You can create up to ${MAX_PIECES_PER_IMAGE} slices per image.`;
+  const savedPiecesLimitText =
+    locale === "he"
+      ? `אפשר לשמור עד ${MAX_SAVED_PIECES} חתיכות בסשן אחד.`
+      : `You can save up to ${MAX_SAVED_PIECES} pieces in one session.`;
+
+  const detectSubjectText = locale === "he" ? "זהה אובייקט מרכזי" : "Detect Main Subject";
+  const applyDetectedBackgroundText = locale === "he" ? "החל רקע נבחר" : "Apply Selected Background";
+  const detectedSubjectReadyText =
+    locale === "he" ? "זוהה אובייקט מרכזי. אם זה נכון, החל את הרקע שבחרת." : "Main subject detected. If it looks right, apply your chosen background.";
+  const noSubjectDetectedText =
+    locale === "he" ? "לא הצלחתי לזהות אובייקט מרכזי ברור בתמונה הזו." : "Couldn't detect a clear main subject in this image.";
+  const editingActionsTitle = locale === "he" ? "פעולות כלליות" : "General Actions";
+  const subjectBackgroundTitle = locale === "he" ? "אובייקט ורקע" : "Subject & Background";
+  const manualEditingTitle = locale === "he" ? "עריכה ידנית" : "Manual Editing";
+
   function showNotice(text: string, tone: AppNoticeTone) {
     setAppNotice({ text, tone });
     if (noticeTimeoutRef.current) {
@@ -936,6 +1174,20 @@ export default function App() {
     }
   }
 
+  function canCreateAdditionalPieces(additionalCount: number, nextImagePieceCount = outputPieces.length + additionalCount) {
+    if (nextImagePieceCount > MAX_PIECES_PER_IMAGE) {
+      showNotice(perImageLimitText, "error");
+      return false;
+    }
+
+    if (savedPieces.length >= MAX_SAVED_PIECES) {
+      showNotice(savedPiecesLimitText, "error");
+      return false;
+    }
+
+    return true;
+  }
+
   const getPieceName = (piece: OutputPiece, index: number) => {
     const customName = pieceNames[piece.key]?.trim();
     if (customName) {
@@ -943,11 +1195,6 @@ export default function App() {
     }
 
     return `${slugifyName(fileName)}-${index + 1}`;
-  };
-
-  const getPieceAltText = (piece: OutputPiece, index: number) => {
-    const customName = pieceNames[piece.key]?.trim();
-    return customName || getPieceName(piece, index);
   };
 
   const upscaleDataUrl = async (dataUrl: string, scaleFactor: number) => {
@@ -1059,6 +1306,11 @@ export default function App() {
         setIsDrawingFreehand(false);
 
         if (draftFreehandPoints.length >= 3) {
+          if (!canCreateAdditionalPieces(1)) {
+            setDraftFreehandPoints([]);
+            return;
+          }
+
           const points = [...draftFreehandPoints];
           const region: FreehandRegion = {
             key: `freehand-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -1082,6 +1334,11 @@ export default function App() {
         const height = Math.abs(draftRectSelection.endY - draftRectSelection.startY);
 
         if (width > 4 && height > 4) {
+          if (!canCreateAdditionalPieces(1)) {
+            setDraftRectSelection(null);
+            return;
+          }
+
           setEditedPieceDataUrls({});
           setIsEditingGuides(false);
           setRectRegions((prev) => [
@@ -1209,6 +1466,17 @@ export default function App() {
     return [...savedPieces, ...outputPieces.filter((piece) => !savedPieces.some((saved) => saved.key === piece.key))];
   }, [outputPieces, savedPieces]);
 
+  const uploadingPieceCount = useMemo(
+    () => visibleAndSavedPieces.filter((piece) => sliceUploads[piece.key]?.uploading).length,
+    [sliceUploads, visibleAndSavedPieces]
+  );
+
+  const hasUploadsInProgress = uploadingPieceCount > 0;
+
+  const allVisiblePiecesUploaded =
+    visibleAndSavedPieces.length > 0 &&
+    visibleAndSavedPieces.every((piece) => Boolean(sliceUploads[piece.key]?.uploadedUrl));
+
   useEffect(() => {
     setSliceUploads((prev) => {
       const next: Record<string, SliceUploadState> = {};
@@ -1275,6 +1543,11 @@ export default function App() {
       setCleanupHistory([]);
       setCleanupTool("paint");
       setCleanupSelection(null);
+      cleanupSelectionRef.current = null;
+      setDetectedSubjectBounds(null);
+      detectedSubjectMaskRef.current = null;
+      isCleanupPaintingRef.current = false;
+      cleanupCanvasRectRef.current = null;
       cleanupLastPointRef.current = null;
     }
 
@@ -1285,6 +1558,14 @@ export default function App() {
     const basePiece = baseOutputPieces.find((piece) => piece.key === cleanupPieceKey) ?? null;
     setCleanupOriginalDataUrl(basePiece?.dataUrl ?? null);
   }, [baseOutputPieces, cleanupPieceKey]);
+
+  useEffect(() => {
+    return () => {
+      if (cleanupSelectionFrameRef.current !== null) {
+        window.cancelAnimationFrame(cleanupSelectionFrameRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     async function loadCleanupOriginalPiece() {
@@ -1316,6 +1597,11 @@ export default function App() {
       return;
     }
 
+    if (file.size > MAX_UPLOAD_FILE_BYTES) {
+      showNotice(fileTooLargeText, "error");
+      return;
+    }
+
     const baseName = file.name.replace(/\.[^.]+$/, "") || "image";
     const { image, src } = await buildImage(file);
 
@@ -1334,11 +1620,8 @@ export default function App() {
     setIsEditingGuides(true);
     setEditedPieceDataUrls({});
     setRemovedPieceKeys([]);
-    setPieceNames({});
     setFreehandRegions([]);
     setRectRegions([]);
-    setSavedPieces([]);
-    setSliceUploads({});
     setDraftFreehandPoints([]);
     setDraftRectSelection(null);
     setSelectedGuide(null);
@@ -1548,8 +1831,40 @@ export default function App() {
     clearWorkspace();
   }
 
-  const cuttingToolPanel = imageEl ? (
-    <div className="guide-generate-banner">
+  const modeToolbar = (
+    <div className="guide-generate-banner tool-mode-panel">
+      {mode === "guides" ? (
+        <div className="tool-panel-section tool-panel-section-priority">
+          <span className="block-title">{t.guidesTitle}</span>
+          <div className="guide-action-grid">
+            <button title={t.addVertical} onClick={() => addGuide("v")}>
+              <Plus size={16} />
+              {t.addVertical}
+            </button>
+            <button title={t.addHorizontal} onClick={() => addGuide("h")}>
+              <Plus size={16} />
+              {t.addHorizontal}
+            </button>
+            <button title={t.removeVertical} onClick={() => removeLastGuide("v")} disabled={verticalGuides.length === 0}>
+              <Trash2 size={16} />
+              {t.removeVertical}
+            </button>
+            <button title={t.removeHorizontal} onClick={() => removeLastGuide("h")} disabled={horizontalGuides.length === 0}>
+              <Trash2 size={16} />
+              {t.removeHorizontal}
+            </button>
+          </div>
+          <button
+            className="danger-button"
+            onClick={deleteSelectedGuide}
+            disabled={!selectedGuide || mode !== "guides"}
+          >
+            <Trash2 size={16} />
+            {t.deleteSelectedGuide}
+          </button>
+        </div>
+      ) : null}
+
       <div className="mode-picker-header">
         <div>
           <strong>{t.chooseYourCuttingTool}</strong>
@@ -1584,33 +1899,158 @@ export default function App() {
         </button>
       </div>
 
+      {mode === "rectangle" ? (
+        <div className="tool-panel-section">
+          <span className="block-title">{t.rectangleOutputSize}</span>
+          <div className="rectangle-preset-list">
+            {RECTANGLE_SIZE_PRESETS.map((preset) => (
+              <button
+                key={`${preset.width}-${preset.height}`}
+                className={
+                  rectangleTargetWidth === preset.width && rectangleTargetHeight === preset.height
+                    ? "rectangle-preset-button rectangle-preset-button-active"
+                    : "rectangle-preset-button"
+                }
+                onClick={() => applyRectanglePreset(preset.width, preset.height)}
+              >
+                <strong>{preset.label}</strong>
+                <span>{preset.description}</span>
+              </button>
+            ))}
+          </div>
+          <label className="field">
+            <span>{t.width}</span>
+            <input
+              type="number"
+              min="200"
+              step="50"
+              value={rectangleTargetWidth}
+              onChange={(event) => setRectangleTargetWidth(Math.max(200, Number(event.target.value) || 200))}
+            />
+          </label>
+          <label className="field">
+            <span>{t.height}</span>
+            <input
+              type="number"
+              min="200"
+              step="50"
+              value={rectangleTargetHeight}
+              onChange={(event) => setRectangleTargetHeight(Math.max(200, Number(event.target.value) || 200))}
+            />
+          </label>
+          <p className="hint">{t.rectangleHint}</p>
+        </div>
+      ) : null}
+
       {mode === "guides" ? (
         <>
-          <div className="guide-action-grid">
-            <button title={t.addVertical} onClick={() => addGuide("v")}>
-              <Plus size={16} />
-              {t.addVertical}
-            </button>
-            <button title={t.addHorizontal} onClick={() => addGuide("h")}>
-              <Plus size={16} />
-              {t.addHorizontal}
-            </button>
-            <button title={t.removeVertical} onClick={() => removeLastGuide("v")} disabled={verticalGuides.length === 0}>
-              <Trash2 size={16} />
-              {t.removeVertical}
-            </button>
-            <button title={t.removeHorizontal} onClick={() => removeLastGuide("h")} disabled={horizontalGuides.length === 0}>
-              <Trash2 size={16} />
-              {t.removeHorizontal}
-            </button>
+          <div className="tool-panel-section">
+            <span className="block-title">{t.quickPresets}</span>
+            <div className="button-grid">
+              <button onClick={() => setPreset(2, 2)} disabled={!imageEl || mode !== "guides"}>
+                {t.twoByTwo}
+              </button>
+              <button onClick={() => setPreset(3, 3)} disabled={!imageEl || mode !== "guides"}>
+                {quickGridText.threeByThree}
+              </button>
+              <button onClick={() => setPreset(4, 4)} disabled={!imageEl || mode !== "guides"}>
+                {quickGridText.fourByFour}
+              </button>
+            </div>
+            <div className="custom-grid-panel">
+              <span className="custom-grid-title">{quickGridText.customGrid}</span>
+              <div className="custom-grid-inputs">
+                <label className="field">
+                  <span>{t.width}</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    value={customGuideColumns}
+                    onChange={(event) => setCustomGuideColumns(Math.max(1, Number(event.target.value) || 1))}
+                  />
+                </label>
+                <label className="field">
+                  <span>{t.height}</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    value={customGuideRows}
+                    onChange={(event) => setCustomGuideRows(Math.max(1, Number(event.target.value) || 1))}
+                  />
+                </label>
+              </div>
+              <button onClick={applyCustomGuideGrid} disabled={!imageEl || mode !== "guides"}>
+                {quickGridText.applyGrid}
+              </button>
+            </div>
           </div>
           <button className="guide-generate-button" onClick={generateGuideSlices}>
             <Grid2x2Plus size={20} />
             {t.generateGuideSlices}
           </button>
           <p>{t.generateGuideSlicesCopy}</p>
+          <p className="hint">{t.guidesHint}</p>
         </>
       ) : null}
+
+      {mode === "freehand" ? <p className="hint tool-mode-hint">{t.freehandHint}</p> : null}
+    </div>
+  );
+
+  const centerActionsPanel = imageEl ? (
+    <div className="floating-bulk-actions floating-bulk-actions-near-preview">
+      <div className="floating-bulk-header">
+        <strong>{t.globalActions}</strong>
+        <span>{t.globalActionsCopy}</span>
+      </div>
+      <label className="field center-actions-field">
+        <span>{t.exportQuality}</span>
+        <select value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}>
+          <option value={1}>{t.standard1x}</option>
+          <option value={2}>{t.enhanced2x}</option>
+          <option value={3}>{t.enhanced3x}</option>
+        </select>
+      </label>
+      <div className="floating-bulk-grid">
+        <button
+          className="primary-button floating-action-button"
+          onClick={downloadAllPngs}
+          disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
+        >
+          <Download size={18} />
+          {t.downloadAllPngs}
+        </button>
+        <button
+          className="primary-button floating-action-button"
+          onClick={uploadAllPieces}
+          disabled={visibleAndSavedPieces.length === 0 || hasUploadsInProgress}
+        >
+          {hasUploadsInProgress ? <LoaderCircle size={18} className="button-spinner" /> : <Download size={18} />}
+          {hasUploadsInProgress ? t.createLinksInProgress : t.uploadAllCloudinary}
+        </button>
+        <button className="floating-action-button" onClick={copyAllLinks} disabled={!allVisiblePiecesUploaded || hasUploadsInProgress}>
+          <Copy size={18} />
+          {t.copyAllLinks}
+        </button>
+        <button
+          className="primary-button floating-action-button"
+          onClick={downloadZip}
+          disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
+        >
+          <Download size={18} />
+          {isExportingZip ? t.buildingZip : t.downloadZip}
+        </button>
+      </div>
+      <label className="auto-upload-toggle floating-auto-upload-toggle">
+        <input
+          type="checkbox"
+          checked={autoUploadEnabled}
+          onChange={(event) => setAutoUploadEnabled(event.target.checked)}
+        />
+        <span>{t.autoUpload}</span>
+      </label>
     </div>
   ) : null;
 
@@ -1638,6 +2078,16 @@ export default function App() {
       return;
     }
 
+    const guideCount =
+      verticalGuides.length === 0 && horizontalGuides.length === 0
+        ? 0
+        : (verticalGuides.length + 1) * (horizontalGuides.length + 1);
+    const nonGridOutputCount = outputPieces.filter((piece) => !piece.key.startsWith("grid-")).length;
+
+    if (!canCreateAdditionalPieces(0, nonGridOutputCount + guideCount)) {
+      return;
+    }
+
     setCommittedVerticalGuides(sortUnique(verticalGuides, 1, imageEl.width - 1));
     setCommittedHorizontalGuides(sortUnique(horizontalGuides, 1, imageEl.height - 1));
     setEditedPieceDataUrls({});
@@ -1652,6 +2102,11 @@ export default function App() {
   function keepPiece(piece: OutputPiece) {
     setSavedPieces((prev) => {
       if (prev.some((savedPiece) => savedPiece.key === piece.key)) {
+        return prev;
+      }
+
+      if (prev.length >= MAX_SAVED_PIECES) {
+        showNotice(savedPiecesLimitText, "error");
         return prev;
       }
 
@@ -1733,23 +2188,6 @@ export default function App() {
     }
   }
 
-  async function copyPieceHtml(piece: OutputPiece, index: number) {
-    const uploadedUrl = sliceUploads[piece.key]?.uploadedUrl;
-    if (!uploadedUrl) {
-      showNotice(t.noUploadedImagesYet, "error");
-      return;
-    }
-
-    const html = `<img src="${uploadedUrl}" alt="${getPieceAltText(piece, index)}" />`;
-
-    try {
-      await navigator.clipboard.writeText(html);
-      showNotice(t.htmlCopied, "success");
-    } catch {
-      showNotice(t.copyFailed, "error");
-    }
-  }
-
   async function copyAllLinks() {
     const uploadedUrls = visibleAndSavedPieces
       .map((piece) => sliceUploads[piece.key]?.uploadedUrl)
@@ -1763,31 +2201,6 @@ export default function App() {
     try {
       await navigator.clipboard.writeText(uploadedUrls.join("\n"));
       showNotice(t.allLinksCopied, "success");
-    } catch {
-      showNotice(t.copyFailed, "error");
-    }
-  }
-
-  async function copyAllHtml() {
-    const htmlLines = visibleAndSavedPieces
-      .map((piece, index) => {
-        const uploadedUrl = sliceUploads[piece.key]?.uploadedUrl;
-        if (!uploadedUrl) {
-          return null;
-        }
-
-        return `<img src="${uploadedUrl}" alt="${getPieceAltText(piece, index)}" />`;
-      })
-      .filter((line): line is string => Boolean(line));
-
-    if (htmlLines.length === 0) {
-      showNotice(t.noUploadedImagesYet, "error");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(htmlLines.join("\n"));
-      showNotice(t.allHtmlCopied, "success");
     } catch {
       showNotice(t.copyFailed, "error");
     }
@@ -1885,13 +2298,25 @@ export default function App() {
       return null;
     }
 
-    const rect = canvas.getBoundingClientRect();
+    const rect = cleanupCanvasRectRef.current ?? canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     return {
       x: clamp((clientX - rect.left) * scaleX, 0, canvas.width),
       y: clamp((clientY - rect.top) * scaleY, 0, canvas.height),
     };
+  }
+
+  function scheduleCleanupSelection(nextSelection: CleanupSelection) {
+    cleanupSelectionRef.current = nextSelection;
+    if (cleanupSelectionFrameRef.current !== null) {
+      return;
+    }
+
+    cleanupSelectionFrameRef.current = window.requestAnimationFrame(() => {
+      cleanupSelectionFrameRef.current = null;
+      setCleanupSelection(cleanupSelectionRef.current);
+    });
   }
 
   function applyCompletionSelection(selection: Exclude<CleanupSelection, null>) {
@@ -1950,11 +2375,10 @@ export default function App() {
     }
 
     if (cleanupTool === "complete") {
-      setCleanupSelection((prev) =>
-        prev
-          ? { ...prev, endX: point.x, endY: point.y }
-          : { startX: point.x, startY: point.y, endX: point.x, endY: point.y }
-      );
+      const nextSelection = cleanupSelectionRef.current
+        ? { ...cleanupSelectionRef.current, endX: point.x, endY: point.y }
+        : { startX: point.x, startY: point.y, endX: point.x, endY: point.y };
+      scheduleCleanupSelection(nextSelection);
       return;
     }
 
@@ -1992,14 +2416,17 @@ export default function App() {
 
   function startCleanupPaint(event: React.MouseEvent<HTMLCanvasElement>) {
     pushCleanupSnapshot();
-    setIsCleanupPainting(true);
+    setDetectedSubjectBounds(null);
+    detectedSubjectMaskRef.current = null;
+    isCleanupPaintingRef.current = true;
+    cleanupCanvasRectRef.current = cleanupCanvasRef.current?.getBoundingClientRect() ?? null;
     if (cleanupTool === "complete") {
       const point = getCleanupCanvasPoint(event.clientX, event.clientY);
       if (!point) {
         return;
       }
 
-      setCleanupSelection({
+      scheduleCleanupSelection({
         startX: point.x,
         startY: point.y,
         endX: point.x,
@@ -2012,7 +2439,7 @@ export default function App() {
   }
 
   function continueCleanupPaint(event: React.MouseEvent<HTMLCanvasElement>) {
-    if (!isCleanupPainting) {
+    if (!isCleanupPaintingRef.current) {
       return;
     }
 
@@ -2020,12 +2447,14 @@ export default function App() {
   }
 
   function stopCleanupPaint() {
-    if (cleanupTool === "complete" && cleanupSelection) {
-      applyCompletionSelection(cleanupSelection);
+    if (cleanupTool === "complete" && cleanupSelectionRef.current) {
+      applyCompletionSelection(cleanupSelectionRef.current);
+      cleanupSelectionRef.current = null;
       setCleanupSelection(null);
     }
 
-    setIsCleanupPainting(false);
+    isCleanupPaintingRef.current = false;
+    cleanupCanvasRectRef.current = null;
     cleanupLastPointRef.current = null;
   }
 
@@ -2036,6 +2465,11 @@ export default function App() {
 
     const dataUrl = cleanupCanvasRef.current.toDataURL("image/png");
     setEditedPieceDataUrls((prev) => ({ ...prev, [cleanupPieceKey]: dataUrl }));
+    cleanupSelectionRef.current = null;
+    cleanupCanvasRectRef.current = null;
+    isCleanupPaintingRef.current = false;
+    setDetectedSubjectBounds(null);
+    detectedSubjectMaskRef.current = null;
     setCleanupPieceKey(null);
   }
 
@@ -2049,6 +2483,11 @@ export default function App() {
       delete next[cleanupPieceKey];
       return next;
     });
+    cleanupSelectionRef.current = null;
+    cleanupCanvasRectRef.current = null;
+    isCleanupPaintingRef.current = false;
+    setDetectedSubjectBounds(null);
+    detectedSubjectMaskRef.current = null;
     setCleanupPieceKey(null);
   }
 
@@ -2068,6 +2507,74 @@ export default function App() {
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.drawImage(image, 0, 0);
     setCleanupHistory((prev) => prev.slice(0, -1));
+    cleanupSelectionRef.current = null;
+    setDetectedSubjectBounds(null);
+    detectedSubjectMaskRef.current = null;
+  }
+
+  function detectCleanupSubject() {
+    const canvas = cleanupCanvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+      return;
+    }
+
+    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    const detected = detectCentralSubject(imageData.data, canvas.width, canvas.height, hexToRgb(cleanupFillColor));
+
+    if (!detected) {
+      setDetectedSubjectBounds(null);
+      detectedSubjectMaskRef.current = null;
+      showNotice(noSubjectDetectedText, "error");
+      return;
+    }
+
+    setDetectedSubjectBounds(detected.bounds);
+    detectedSubjectMaskRef.current = detected.mask;
+    showNotice(detectedSubjectReadyText, "info");
+  }
+
+  function applyDetectedSubjectBackground() {
+    const canvas = cleanupCanvasRef.current;
+    const mask = detectedSubjectMaskRef.current;
+    const bounds = detectedSubjectBounds;
+    if (!canvas || !mask || !bounds) {
+      return;
+    }
+
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+      return;
+    }
+
+    pushCleanupSnapshot();
+
+    const sourceImageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    const result = context.createImageData(canvas.width, canvas.height);
+    const fillColor = hexToRgb(cleanupFillColor);
+
+    for (let index = 0; index < canvas.width * canvas.height; index += 1) {
+      const offset = index * 4;
+      if (mask[index] === 1) {
+        result.data[offset] = sourceImageData.data[offset];
+        result.data[offset + 1] = sourceImageData.data[offset + 1];
+        result.data[offset + 2] = sourceImageData.data[offset + 2];
+        result.data[offset + 3] = sourceImageData.data[offset + 3];
+      } else {
+        result.data[offset] = fillColor.r;
+        result.data[offset + 1] = fillColor.g;
+        result.data[offset + 2] = fillColor.b;
+        result.data[offset + 3] = 255;
+      }
+    }
+
+    context.putImageData(result, 0, 0);
+    setDetectedSubjectBounds(null);
+    detectedSubjectMaskRef.current = null;
   }
 
   function centerCleanupSubject() {
@@ -2120,6 +2627,8 @@ export default function App() {
     }
 
     pushCleanupSnapshot();
+    setDetectedSubjectBounds(null);
+    detectedSubjectMaskRef.current = null;
 
     const subjectWidth = maxX - minX + 1;
     const subjectHeight = maxY - minY + 1;
@@ -2185,6 +2694,8 @@ export default function App() {
     }
 
     pushCleanupSnapshot();
+    setDetectedSubjectBounds(null);
+    detectedSubjectMaskRef.current = null;
 
     const subjectWidth = maxX - minX + 1;
     const subjectHeight = maxY - minY + 1;
@@ -2303,103 +2814,6 @@ export default function App() {
           </div>
 
           <div className="panel-block">
-            <span className="block-title">{t.quickPresets}</span>
-            <div className="button-grid">
-              <button onClick={() => setPreset(2, 2)} disabled={!imageEl || mode !== "guides"}>
-                {t.twoByTwo}
-              </button>
-                <button onClick={() => setPreset(3, 3)} disabled={!imageEl || mode !== "guides"}>
-                  {quickGridText.threeByThree}
-                </button>
-                <button onClick={() => setPreset(4, 4)} disabled={!imageEl || mode !== "guides"}>
-                  {quickGridText.fourByFour}
-                </button>
-              </div>
-              <div className="custom-grid-panel">
-              <span className="custom-grid-title">{quickGridText.customGrid}</span>
-              <div className="custom-grid-inputs">
-                <label className="field">
-                  <span>{t.width}</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="12"
-                    value={customGuideColumns}
-                    onChange={(event) => setCustomGuideColumns(Math.max(1, Number(event.target.value) || 1))}
-                  />
-                </label>
-                <label className="field">
-                  <span>{t.height}</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="12"
-                    value={customGuideRows}
-                    onChange={(event) => setCustomGuideRows(Math.max(1, Number(event.target.value) || 1))}
-                  />
-                </label>
-              </div>
-              <button onClick={applyCustomGuideGrid} disabled={!imageEl || mode !== "guides"}>
-                {quickGridText.applyGrid}
-              </button>
-            </div>
-          </div>
-
-          {mode === "rectangle" ? (
-            <div className="panel-block">
-              <span className="block-title">{t.rectangleOutputSize}</span>
-              <div className="rectangle-preset-list">
-                {RECTANGLE_SIZE_PRESETS.map((preset) => (
-                  <button
-                    key={`${preset.width}-${preset.height}`}
-                    className={
-                      rectangleTargetWidth === preset.width && rectangleTargetHeight === preset.height
-                        ? "rectangle-preset-button rectangle-preset-button-active"
-                        : "rectangle-preset-button"
-                    }
-                    onClick={() => applyRectanglePreset(preset.width, preset.height)}
-                  >
-                    <strong>{preset.label}</strong>
-                    <span>{preset.description}</span>
-                  </button>
-                ))}
-              </div>
-              <label className="field">
-                <span>{t.width}</span>
-                <input
-                  type="number"
-                  min="200"
-                  step="50"
-                  value={rectangleTargetWidth}
-                  onChange={(event) => setRectangleTargetWidth(Math.max(200, Number(event.target.value) || 200))}
-                />
-              </label>
-              <label className="field">
-                <span>{t.height}</span>
-                <input
-                  type="number"
-                  min="200"
-                  step="50"
-                  value={rectangleTargetHeight}
-                  onChange={(event) => setRectangleTargetHeight(Math.max(200, Number(event.target.value) || 200))}
-                />
-              </label>
-            </div>
-          ) : null}
-
-          <div className="panel-block">
-            <span className="block-title">{t.guidesTitle}</span>
-            <button
-              className="danger-button"
-              onClick={deleteSelectedGuide}
-              disabled={!selectedGuide || mode !== "guides"}
-            >
-              <Trash2 size={16} />
-              {t.deleteSelectedGuide}
-            </button>
-          </div>
-
-          <div className="panel-block">
             <label className="field">
               <span>{t.previewZoom}: {scale}%</span>
               <input
@@ -2412,101 +2826,10 @@ export default function App() {
               />
             </label>
           </div>
-
-          <div className="panel-block export-block">
-            <div className="panel-subsection-title">
-              <strong>{t.globalActions}</strong>
-              <span>{t.globalActionsCopy}</span>
-            </div>
-            <label className="field">
-              <span>{t.exportQuality}</span>
-              <select value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}>
-                <option value={1}>{t.standard1x}</option>
-                <option value={2}>{t.enhanced2x}</option>
-                <option value={3}>{t.enhanced3x}</option>
-              </select>
-            </label>
-            <button
-              className="primary-button"
-              onClick={downloadAllPngs}
-              disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
-            >
-              <Download size={16} />
-              {t.downloadAllPngs}
-            </button>
-            <button
-              className="primary-button"
-              onClick={uploadAllPieces}
-              disabled={visibleAndSavedPieces.length === 0}
-            >
-              <Download size={16} />
-              {t.uploadAllCloudinary}
-            </button>
-            <div className="bulk-action-grid">
-              <button onClick={copyAllLinks} disabled={visibleAndSavedPieces.length === 0}>
-                <Copy size={16} />
-                {t.copyAllLinks}
-              </button>
-              <button onClick={copyAllHtml} disabled={visibleAndSavedPieces.length === 0}>
-                <Copy size={16} />
-                {t.copyAllHtml}
-              </button>
-            </div>
-            <label className="auto-upload-toggle">
-              <input
-                type="checkbox"
-                checked={autoUploadEnabled}
-                onChange={(event) => setAutoUploadEnabled(event.target.checked)}
-              />
-              <span>{t.autoUpload}</span>
-            </label>
-            <button
-              className="primary-button"
-              onClick={downloadZip}
-              disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
-            >
-              <Download size={16} />
-              {isExportingZip ? t.buildingZip : t.downloadZip}
-            </button>
-              <p className="hint">
-                {mode === "guides"
-                  ? t.guidesHint
-                  : mode === "freehand"
-                    ? t.freehandHint
-                    : t.rectangleHint}
-              </p>
-            </div>
         </aside>
 
         <section className="main-panel">
           <div className="canvas-card preview-card">
-            <div className="canvas-header">
-              <div>
-                <h2>{t.livePreview}</h2>
-                <p>
-                  {mode === "guides"
-                    ? t.guidesPreviewCopy
-                    : mode === "freehand"
-                      ? t.freehandPreviewCopy
-                      : t.rectanglePreviewCopy}
-                </p>
-              </div>
-              <div className="legend">
-                <span>
-                  <Move size={14} />
-                  {t.dragGuides}
-                </span>
-                <span>
-                  <Scissors size={14} />
-                  {t.freehandSelection}
-                </span>
-                <span>
-                  <Grid2x2Plus size={14} />
-                  {t.mixedOutput}
-                </span>
-              </div>
-            </div>
-
             {imageSrc && imageEl ? (
               <div className="preview-stage preview-stage-elevated">
                 <div
@@ -2557,6 +2880,22 @@ export default function App() {
                       ) : null}
                     </svg>
                   ) : null}
+                  {mode === "rectangle"
+                    ? rectRegions
+                        .filter((region) => !removedPieceKeys.includes(region.key))
+                        .map((region) => (
+                          <div
+                            key={region.key}
+                            className="preview-rect-selection preview-rect-region"
+                            style={{
+                              left: `${(region.bounds.x / imageEl.width) * 100}%`,
+                              top: `${(region.bounds.y / imageEl.height) * 100}%`,
+                              width: `${(region.bounds.width / imageEl.width) * 100}%`,
+                              height: `${(region.bounds.height / imageEl.height) * 100}%`,
+                            }}
+                          />
+                        ))
+                    : null}
                   {mode === "rectangle" && draftRectSelection ? (
                     <div
                       className="preview-rect-selection"
@@ -2633,62 +2972,12 @@ export default function App() {
             </div>
           ) : null}
 
-          {visibleAndSavedPieces.length > 0 ? (
-            <div className="floating-bulk-actions floating-bulk-actions-near-preview">
-              <div className="floating-bulk-header">
-                <strong>{t.globalActions}</strong>
-                <span>{t.globalActionsCopy}</span>
-              </div>
-              <div className="floating-bulk-grid">
-                <button
-                  className="primary-button floating-action-button"
-                  onClick={downloadAllPngs}
-                  disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
-                >
-                  <Download size={18} />
-                  {t.downloadAllPngs}
-                </button>
-                <button
-                  className="primary-button floating-action-button"
-                  onClick={uploadAllPieces}
-                  disabled={visibleAndSavedPieces.length === 0}
-                >
-                  <Download size={18} />
-                  {t.uploadAllCloudinary}
-                </button>
-                <button className="floating-action-button" onClick={copyAllLinks} disabled={visibleAndSavedPieces.length === 0}>
-                  <Copy size={18} />
-                  {t.copyAllLinks}
-                </button>
-                <button className="floating-action-button" onClick={copyAllHtml} disabled={visibleAndSavedPieces.length === 0}>
-                  <Copy size={18} />
-                  {t.copyAllHtml}
-                </button>
-                <button
-                  className="primary-button floating-action-button"
-                  onClick={downloadZip}
-                  disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
-                >
-                  <Download size={18} />
-                  {isExportingZip ? t.buildingZip : t.downloadZip}
-                </button>
-              </div>
-              <label className="auto-upload-toggle floating-auto-upload-toggle">
-                <input
-                  type="checkbox"
-                  checked={autoUploadEnabled}
-                  onChange={(event) => setAutoUploadEnabled(event.target.checked)}
-                />
-                <span>{t.autoUpload}</span>
-              </label>
-            </div>
-          ) : null}
+          {centerActionsPanel}
 
           <div className="slices-card output-section-card">
             {appNotice ? (
               <div className={`app-notice app-notice-${appNotice?.tone ?? "info"}`}>{appNotice.text}</div>
             ) : null}
-            {imageEl && outputPieces.length === 0 && savedPieces.length === 0 ? cuttingToolPanel : null}
 
             <div className="canvas-header">
               <div>
@@ -2710,54 +2999,68 @@ export default function App() {
                     <strong>{t.cleanup} {cleanupPiece.label}</strong>
                     <p>{t.cleanupCopy}</p>
                   </div>
-                  <div className="cleanup-actions">
+                </div>
+                <div className="cleanup-section">
+                  <span className="cleanup-section-title">{editingActionsTitle}</span>
+                  <div className="cleanup-actions cleanup-actions-primary">
                     <button onClick={undoCleanupAction} disabled={cleanupHistory.length === 0}>
                       {t.undoLastEdit}
                     </button>
                     <button onClick={resetCleanup}>{t.resetPiece}</button>
-                    <button onClick={centerCleanupSubject}>{t.centerSubject}</button>
-                    <button onClick={expandCleanupSubject}>{t.completeWithoutAi}</button>
                     <button onClick={() => setCleanupPieceKey(null)}>{t.cancel}</button>
                     <button className="primary-button cleanup-save-button" onClick={saveCleanup}>
                       {t.saveCleanup}
                     </button>
                   </div>
                 </div>
-                <div className="cleanup-tool-row">
-                  <button
-                    className={cleanupTool === "paint" ? "active-mode-button" : ""}
-                    onClick={() => setCleanupTool("paint")}
-                  >
-                    {t.paintColor}
-                  </button>
-                  <button
-                    className={cleanupTool === "complete" ? "active-mode-button" : ""}
-                    onClick={() => setCleanupTool("complete")}
-                  >
-                    {t.completeSelectedArea}
-                  </button>
+                <div className="cleanup-section">
+                  <span className="cleanup-section-title">{subjectBackgroundTitle}</span>
+                  <div className="cleanup-tool-row">
+                    <button onClick={detectCleanupSubject}>{detectSubjectText}</button>
+                    <button onClick={applyDetectedSubjectBackground} disabled={!detectedSubjectBounds}>
+                      {applyDetectedBackgroundText}
+                    </button>
+                    <button onClick={centerCleanupSubject}>{t.centerSubject}</button>
+                    <button onClick={expandCleanupSubject}>{t.completeWithoutAi}</button>
+                  </div>
+                  <label className="field cleanup-field">
+                    <span>{t.fillColor}</span>
+                    <input
+                      className="cleanup-color-input"
+                      type="color"
+                      value={cleanupFillColor}
+                      onChange={(event) => setCleanupFillColor(event.target.value)}
+                    />
+                  </label>
                 </div>
-                <label className="field cleanup-field">
-                  <span>{t.fillColor}</span>
-                  <input
-                    className="cleanup-color-input"
-                    type="color"
-                    value={cleanupFillColor}
-                    onChange={(event) => setCleanupFillColor(event.target.value)}
-                    disabled={cleanupTool !== "paint"}
-                  />
-                </label>
-                <label className="field cleanup-field">
-                  <span>{t.brushSize}: {cleanupBrushSize}px</span>
-                  <input
-                    type="range"
-                    min="8"
-                    max="80"
-                    step="2"
-                    value={cleanupBrushSize}
-                    onChange={(event) => setCleanupBrushSize(Number(event.target.value))}
-                  />
-                </label>
+                <div className="cleanup-section">
+                  <span className="cleanup-section-title">{manualEditingTitle}</span>
+                  <div className="cleanup-tool-row">
+                    <button
+                      className={cleanupTool === "paint" ? "active-mode-button" : ""}
+                      onClick={() => setCleanupTool("paint")}
+                    >
+                      {t.paintColor}
+                    </button>
+                    <button
+                      className={cleanupTool === "complete" ? "active-mode-button" : ""}
+                      onClick={() => setCleanupTool("complete")}
+                    >
+                      {t.completeSelectedArea}
+                    </button>
+                  </div>
+                  <label className="field cleanup-field">
+                    <span>{t.brushSize}: {cleanupBrushSize}px</span>
+                    <input
+                      type="range"
+                      min="8"
+                      max="80"
+                      step="2"
+                      value={cleanupBrushSize}
+                      onChange={(event) => setCleanupBrushSize(Number(event.target.value))}
+                    />
+                  </label>
+                </div>
                 <div className="cleanup-canvas-wrap">
                   <div className="cleanup-canvas-stage">
                     <canvas
@@ -2776,6 +3079,17 @@ export default function App() {
                           top: `${(Math.min(cleanupSelection.startY, cleanupSelection.endY) / cleanupCanvasRef.current.height) * 100}%`,
                           width: `${(Math.abs(cleanupSelection.endX - cleanupSelection.startX) / cleanupCanvasRef.current.width) * 100}%`,
                           height: `${(Math.abs(cleanupSelection.endY - cleanupSelection.startY) / cleanupCanvasRef.current.height) * 100}%`,
+                        }}
+                      />
+                    ) : null}
+                    {detectedSubjectBounds && cleanupCanvasRef.current ? (
+                      <div
+                        className="cleanup-detected-subject"
+                        style={{
+                          left: `${(detectedSubjectBounds.minX / cleanupCanvasRef.current.width) * 100}%`,
+                          top: `${(detectedSubjectBounds.minY / cleanupCanvasRef.current.height) * 100}%`,
+                          width: `${((detectedSubjectBounds.maxX - detectedSubjectBounds.minX + 1) / cleanupCanvasRef.current.width) * 100}%`,
+                          height: `${((detectedSubjectBounds.maxY - detectedSubjectBounds.minY + 1) / cleanupCanvasRef.current.height) * 100}%`,
                         }}
                       />
                     ) : null}
@@ -2826,8 +3140,12 @@ export default function App() {
                           onClick={() => uploadPiece(piece)}
                           disabled={sliceUploads[piece.key]?.uploading}
                         >
-                          <Download size={14} />
-                          {sliceUploads[piece.key]?.uploading ? "Uploading..." : t.upload}
+                          {sliceUploads[piece.key]?.uploading ? (
+                            <LoaderCircle size={14} className="button-spinner" />
+                          ) : (
+                            <Download size={14} />
+                          )}
+                          {sliceUploads[piece.key]?.uploading ? t.uploadInProgress : t.upload}
                         </button>
                         <button
                           onClick={() => copyUploadedLink(piece.key)}
@@ -2835,13 +3153,6 @@ export default function App() {
                         >
                           <Copy size={14} />
                           {t.copyLink}
-                        </button>
-                        <button
-                          onClick={() => copyPieceHtml(piece, index)}
-                          disabled={!sliceUploads[piece.key]?.uploadedUrl}
-                        >
-                          <Copy size={14} />
-                          {t.copyHtml}
                         </button>
                       </div>
                       {sliceUploads[piece.key]?.uploadedUrl ? (
@@ -2894,22 +3205,19 @@ export default function App() {
                         onClick={() => uploadPiece(piece)}
                         disabled={sliceUploads[piece.key]?.uploading}
                       >
-                        <Download size={14} />
-                        {sliceUploads[piece.key]?.uploading ? "Uploading..." : t.upload}
+                        {sliceUploads[piece.key]?.uploading ? (
+                          <LoaderCircle size={14} className="button-spinner" />
+                        ) : (
+                          <Download size={14} />
+                        )}
+                        {sliceUploads[piece.key]?.uploading ? t.uploadInProgress : t.upload}
                       </button>
                       <button
                         onClick={() => copyUploadedLink(piece.key)}
-                        disabled={!sliceUploads[piece.key]?.uploadedUrl}
+                          disabled={!sliceUploads[piece.key]?.uploadedUrl}
                       >
                         <Copy size={14} />
                         {t.copyLink}
-                      </button>
-                      <button
-                        onClick={() => copyPieceHtml(piece, index)}
-                        disabled={!sliceUploads[piece.key]?.uploadedUrl}
-                      >
-                        <Copy size={14} />
-                        {t.copyHtml}
                       </button>
                     </div>
                     {sliceUploads[piece.key]?.uploadedUrl ? (
@@ -2945,13 +3253,10 @@ export default function App() {
                 </div>
               ) : null}
             </div>
-            {imageEl && (outputPieces.length > 0 || savedPieces.length > 0) ? (
-              <div className="cutting-tool-panel-bottom">
-                {cuttingToolPanel}
-              </div>
-            ) : null}
           </div>
         </section>
+
+        <aside className="panel tool-panel">{modeToolbar}</aside>
       </section>
     </main>
   );
