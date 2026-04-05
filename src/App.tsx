@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import {
+  Copy,
   Download,
   Grid2x2Plus,
   Image as ImageIcon,
@@ -61,6 +62,21 @@ type SavedPiece = OutputPiece & {
   savedAt: number;
 };
 
+type SliceUploadState = {
+  previewUrl: string;
+  blob: Blob;
+  uploadedUrl: string | null;
+  uploading: boolean;
+  error: string | null;
+};
+
+type AppNoticeTone = "info" | "error" | "success";
+
+type AppNotice = {
+  text: string;
+  tone: AppNoticeTone;
+} | null;
+
 const RECTANGLE_SIZE_PRESETS = [
   { width: 800, height: 800, label: "800 x 800", description: "Good for fast-loading square product images." },
   { width: 1080, height: 1080, label: "1080 x 1080", description: "Great for digital catalogs and social-ready square images." },
@@ -69,12 +85,247 @@ const RECTANGLE_SIZE_PRESETS = [
 ] as const;
 
 type CleanupTool = "paint" | "complete";
+type Locale = "en" | "he";
 type CleanupSelection = {
   startX: number;
   startY: number;
   endX: number;
   endY: number;
 } | null;
+
+const translations = {
+  en: {
+    builtFor: "Built for clean asset workflows",
+    heroTitle: "Cut one image into clean PNG pieces",
+    heroCopy:
+      "A focused image slicing workspace for developers, ecommerce teams, and site builders who need fast, reusable PNG assets and shareable hosted image URLs without the clutter.",
+    editingNote: "Guide mode is waiting for you. Click Generate guide slices when the lines are ready.",
+    slices: "Slices",
+    guides: "Guides",
+    zoom: "Zoom",
+    controls: "Controls",
+    controlsCopy: "Upload, name, format, and export your assets.",
+    uploadImage: "Upload image",
+    chooseImageFile: "Choose Image File",
+    noFileSelected: "No file selected",
+    baseFileName: "Base file name",
+    quickPresets: "Quick presets",
+    twoByTwo: "2 x 2",
+    threeByThree: "3 x 3",
+    fourByFour: "4 x 4",
+    customGrid: "Custom grid",
+    applyGrid: "Apply grid",
+    rectangleOutputSize: "Rectangle Output Size",
+    width: "Width",
+    height: "Height",
+    guidesTitle: "Guides",
+    deleteSelectedGuide: "Delete selected guide",
+    clearImageAndReset: "Clear image and reset",
+    deleteEverything: "Delete Everything",
+    confirmDeleteAll: "Delete everything and start over?",
+    previewZoom: "Preview zoom",
+    globalActions: "Global Actions",
+    globalActionsCopy: "Export, upload, and copy outputs in bulk.",
+    exportQuality: "Export quality",
+    standard1x: "Standard 1x",
+    enhanced2x: "Enhanced 2x",
+    enhanced3x: "Enhanced 3x",
+    downloadAllPngs: "Download All PNGs",
+    uploadAllCloudinary: "Create Links for All Images",
+    copyAllLinks: "Copy All Links",
+    copyAllHtml: "Copy All HTML",
+    autoUpload: "Auto Upload new pieces",
+    downloadZip: "Download ZIP",
+    buildingZip: "Building ZIP...",
+    guidesHint: "Tip: add and adjust the guide lines first, then click Generate guide slices to create the images.",
+    freehandHint: "Tip: press and drag around the object. When you release the mouse, a rectangular cutout is created.",
+    rectangleHint: "Tip: drag a rectangle around the object. The result will be centered inside your fixed output size with matching background color.",
+    livePreview: "Live preview",
+    guidesPreviewCopy: "Add and move guide lines, then generate the slices when you are ready.",
+    freehandPreviewCopy: "Draw freely around any object you want to extract.",
+    rectanglePreviewCopy: "Drag a rectangle around the object you want to cut automatically.",
+    dragGuides: "Drag guides",
+    freehandSelection: "Freehand selection",
+    mixedOutput: "Mixed output",
+    dropImageTitle: "Drop an image here or click to upload",
+    dropImageCopy: "Use JPG or PNG files to start slicing.",
+    chooseYourCuttingTool: "Choose Your Cutting Tool",
+    chooseYourCuttingToolCopy: "Pick the workflow you want to use before creating your image pieces.",
+    recommendedRectangle: "Recommended: Rectangle crop",
+    rectangleCrop: "Rectangle crop",
+    rectangleCropCopy: "The easiest option for clean product images.",
+    freehandDraw: "Freehand draw",
+    freehandDrawCopy: "Useful when the shape is irregular and needs a hand-drawn cut.",
+    straightGuides: "Straight guides",
+    straightGuidesCopy: "Best when you want to divide one image into several clean sections.",
+    addVertical: "Add vertical",
+    addHorizontal: "Add horizontal",
+    removeVertical: "Remove vertical",
+    removeHorizontal: "Remove horizontal",
+    generateGuideSlices: "Generate Guide Slices",
+    generateGuideSlicesCopy: "Create all guide-based image pieces only when your vertical and horizontal lines are ready.",
+    outputPieces: "Output pieces",
+    guideSlicesWaiting: "Guide slices are not generated yet. Click Generate guide slices when you are ready.",
+    pngReady: "PNG slices ready for export.",
+    slicesAppearLater: "Your slices will appear here after a cut layout is complete.",
+    cleanup: "Cleanup",
+    cleanupCopy: "Pick a tool, then either paint with a chosen color or mark an area for non-AI completion from the original piece.",
+    undoLastEdit: "Undo last edit",
+    resetPiece: "Reset piece",
+    centerSubject: "Center subject",
+    completeWithoutAi: "Complete without AI",
+    cancel: "Cancel",
+    saveCleanup: "Save cleanup",
+    paintColor: "Paint color",
+    completeSelectedArea: "Complete selected area",
+    fillColor: "Fill color",
+    brushSize: "Brush size",
+    savedPieces: "Saved pieces",
+    savedPiecesCopy: "These pieces stay here even if you change guides or create new cuts.",
+    imageName: "Image name",
+    download: "Download",
+    upload: "Create web link",
+    copyLink: "Copy Link",
+    copyHtml: "Copy HTML",
+    removeSaved: "Remove saved",
+    saved: "Saved",
+    keepPiece: "Keep piece",
+    removePiece: "Remove piece",
+    readyToExport: "Ready to export",
+    savedPiece: "Saved piece",
+    addGuidePlaceholder: "Add at least one guide to create closed cut areas inside the image frame.",
+    freehandPlaceholder: "Draw around any object with the mouse, and the selected shape will be exported inside a rectangular image.",
+    guidesWaiting: "Add or adjust the guide lines, then click Generate guide slices to create the image pieces.",
+    uploadCompleted: "Upload completed.",
+    uploadFailed: "Upload failed",
+    linkCopied: "Link copied.",
+    htmlCopied: "HTML copied.",
+    allLinksCopied: "All links copied.",
+    allHtmlCopied: "All HTML copied.",
+    noUploadedImagesYet: "No uploaded images yet.",
+    copyFailed: "Copy failed. Please try again.",
+    copyFailedManual: "Copy failed. Please copy the link manually.",
+    language: "עברית",
+    verticalGuideTitle: "Vertical guide",
+    horizontalGuideTitle: "Horizontal guide",
+    noImageLoadedYet: "No image loaded yet",
+    uploadJpgPng: "Upload a JPG or PNG to start slicing.",
+  },
+  he: {
+    builtFor: "נבנה לזרימות עבודה נקיות של נכסי תמונה",
+    heroTitle: "חתוך תמונה אחת לחלקי PNG נקיים",
+    heroCopy:
+      "סביבת עבודה ממוקדת למפתחים, חנויות אונליין ובוני אתרים שצריכים נכסי PNG מהירים, ניתנים לשימוש חוזר, וקישורי תמונה מאוחסנים לשיתוף.",
+    editingNote: "מצב הקווים ממתין לך. לחץ על יצירת חיתוכים מהקווים כשהקווים מוכנים.",
+    slices: "חתיכות",
+    guides: "קווים",
+    zoom: "זום",
+    controls: "בקרות",
+    controlsCopy: "העלה, תן שם, בחר פורמט וייצא את הנכסים שלך.",
+    uploadImage: "העלאת תמונה",
+    chooseImageFile: "בחר קובץ תמונה",
+    noFileSelected: "לא נבחר קובץ",
+    baseFileName: "שם בסיס לקובץ",
+    quickPresets: "תבניות מהירות",
+    columns2: "2 עמודות",
+    columns3: "3 עמודות",
+    twoByTwo: "2 על 2",
+    threeByTwo: "3 על 2",
+    rectangleOutputSize: "גודל פלט למלבן",
+    width: "רוחב",
+    height: "גובה",
+    guidesTitle: "קווי חיתוך",
+    deleteSelectedGuide: "מחק קו נבחר",
+    clearImageAndReset: "נקה תמונה ואפס",
+    previewZoom: "זום תצוגה",
+    globalActions: "פעולות כלליות",
+    globalActionsCopy: "ייצוא, העלאה והעתקה של כל הפלטים במקום אחד.",
+    exportQuality: "איכות ייצוא",
+    standard1x: "רגיל 1x",
+    enhanced2x: "משופר 2x",
+    enhanced3x: "משופר 3x",
+    downloadAllPngs: "הורד את כל קבצי ה‑PNG",
+    uploadAllCloudinary: "העלה הכול ל‑Cloudinary",
+    copyAllLinks: "העתק את כל הקישורים",
+    copyAllHtml: "העתק את כל ה‑HTML",
+    autoUpload: "העלאה אוטומטית לחתיכות חדשות",
+    downloadZip: "הורד ZIP",
+    buildingZip: "בונה ZIP...",
+    guidesHint: "טיפ: הוסף וערוך את קווי החיתוך, ואז לחץ על יצירת חיתוכים מהקווים כדי ליצור את התמונות.",
+    freehandHint: "טיפ: לחץ וגרור סביב האובייקט. כשמשחררים את העכבר נוצרת חתיכה מלבנית.",
+    rectangleHint: "טיפ: גרור מלבן סביב האובייקט. התוצאה תיושר למרכז בגודל קבוע עם רקע תואם.",
+    livePreview: "תצוגה חיה",
+    guidesPreviewCopy: "הוסף והזז קווים, ואז צור את החתיכות כשתהיה מוכן.",
+    freehandPreviewCopy: "צייר בחופשיות סביב כל אובייקט שתרצה לחלץ.",
+    rectanglePreviewCopy: "גרור מלבן סביב האובייקט שתרצה לחתוך אוטומטית.",
+    dragGuides: "גרירת קווים",
+    freehandSelection: "בחירה חופשית",
+    mixedOutput: "פלט משולב",
+    dropImageTitle: "גרור תמונה לכאן או לחץ כדי להעלות",
+    dropImageCopy: "השתמש בקבצי JPG או PNG כדי להתחיל לחתוך.",
+    chooseYourCuttingTool: "בחר את כלי החיתוך שלך",
+    chooseYourCuttingToolCopy: "בחר את שיטת העבודה לפני יצירת חתיכות התמונה.",
+    recommendedRectangle: "מומלץ: חיתוך מלבני",
+    rectangleCrop: "חיתוך מלבני",
+    rectangleCropCopy: "האפשרות הכי נוחה לתמונות מוצר נקיות.",
+    freehandDraw: "חיתוך חופשי",
+    freehandDrawCopy: "שימושי כשיש צורה לא סדירה שצריך לחתוך ביד.",
+    straightGuides: "קווים ישרים",
+    straightGuidesCopy: "הכי מתאים כשצריך לחלק תמונה אחת לכמה חלקים נקיים.",
+    addVertical: "הוסף קו אנכי",
+    addHorizontal: "הוסף קו אופקי",
+    removeVertical: "הסר קו אנכי",
+    removeHorizontal: "הסר קו אופקי",
+    generateGuideSlices: "צור חתיכות מהקווים",
+    generateGuideSlicesCopy: "יוצר את כל החתיכות רק כשהקווים האנכיים והאופקיים מוכנים.",
+    outputPieces: "חתיכות פלט",
+    guideSlicesWaiting: "חתיכות מהקווים עדיין לא נוצרו. לחץ על יצירת חיתוכים מהקווים כשתהיה מוכן.",
+    pngReady: "חתיכות PNG מוכנות לייצוא.",
+    slicesAppearLater: "החתיכות שלך יופיעו כאן אחרי שהחיתוך יהיה מוכן.",
+    cleanup: "ניקוי",
+    cleanupCopy: "בחר כלי, ואז או לצבוע בצבע שבחרת או לסמן אזור להשלמה חכמה ללא AI.",
+    undoLastEdit: "בטל עריכה אחרונה",
+    resetPiece: "אפס חתיכה",
+    centerSubject: "מרכז אובייקט",
+    completeWithoutAi: "השלם ללא AI",
+    cancel: "ביטול",
+    saveCleanup: "שמור ניקוי",
+    paintColor: "צביעה בצבע",
+    completeSelectedArea: "השלמת אזור נבחר",
+    fillColor: "צבע מילוי",
+    brushSize: "גודל מברשת",
+    savedPieces: "חתיכות שמורות",
+    savedPiecesCopy: "החתיכות האלו נשארות גם אם משנים קווים או יוצרים חיתוכים חדשים.",
+    imageName: "שם תמונה",
+    download: "הורדה",
+    upload: "העלה",
+    copyLink: "העתק קישור",
+    copyHtml: "העתק HTML",
+    removeSaved: "הסר שמורה",
+    saved: "נשמר",
+    keepPiece: "שמור חתיכה",
+    removePiece: "הסר חתיכה",
+    readyToExport: "מוכן לייצוא",
+    savedPiece: "חתיכה שמורה",
+    addGuidePlaceholder: "הוסף לפחות קו אחד כדי ליצור אזורי חיתוך סגורים בתוך המסגרת.",
+    freehandPlaceholder: "צייר סביב כל אובייקט עם העכבר, והצורה שנבחרה תיוצא בתוך תמונה מלבנית.",
+    guidesWaiting: "הוסף או ערוך את קווי החיתוך, ואז לחץ על יצירת חתיכות מהקווים.",
+    uploadCompleted: "ההעלאה הושלמה.",
+    uploadFailed: "ההעלאה נכשלה",
+    linkCopied: "הקישור הועתק.",
+    htmlCopied: "ה‑HTML הועתק.",
+    allLinksCopied: "כל הקישורים הועתקו.",
+    allHtmlCopied: "כל ה‑HTML הועתק.",
+    noUploadedImagesYet: "עדיין אין תמונות שהועלו.",
+    copyFailed: "ההעתקה נכשלה. נסה שוב.",
+    copyFailedManual: "ההעתקה נכשלה. העתק ידנית את הקישור.",
+    language: "English",
+    verticalGuideTitle: "קו אנכי",
+    horizontalGuideTitle: "קו אופקי",
+    noImageLoadedYet: "עדיין לא נטענה תמונה",
+    uploadJpgPng: "העלה קובץ JPG או PNG כדי להתחיל לחתוך.",
+  },
+} as const;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -96,6 +347,31 @@ function dataUrlToBlob(dataUrl: string) {
   }
 
   return new Blob([u8arr], { type: mime });
+}
+
+async function uploadToCloudinary(blob: Blob) {
+  const formData = new FormData();
+  formData.append("file", blob);
+  formData.append("upload_preset", "image_slicer_upload");
+
+  const response = await fetch("https://api.cloudinary.com/v1_1/drpib54ix/image/upload", {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error("Cloudinary upload failed");
+  }
+
+  const data = await response.json();
+  return data.secure_url as string;
+}
+
+function slugifyName(value: string) {
+  const trimmed = value.trim().toLowerCase();
+  const withoutSpecialChars = trimmed.replace(/[^a-z0-9\s-]/g, "");
+  const withHyphens = withoutSpecialChars.replace(/\s+/g, "-").replace(/-+/g, "-");
+  return withHyphens.replace(/^-|-$/g, "") || "image";
 }
 
 function buildImage(file: File) {
@@ -405,7 +681,7 @@ function createRectDataUrl(
   );
 
   const sourceImageData = sourceContext.getImageData(0, 0, trimmedBounds.width, trimmedBounds.height);
-  const backgroundColor = sampleImageDataEdgeColor(sourceImageData);
+  const backgroundColor = "#ffffff";
 
   const targetWidth = options?.targetWidth ?? trimmedBounds.width;
   const targetHeight = options?.targetHeight ?? trimmedBounds.height;
@@ -565,6 +841,7 @@ function hexToRgb(hex: string) {
 }
 
 export default function App() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [imageEl, setImageEl] = useState<HTMLImageElement | null>(null);
   const [verticalGuides, setVerticalGuides] = useState<number[]>([]);
@@ -583,7 +860,12 @@ export default function App() {
   const [exportScale, setExportScale] = useState(1);
   const [rectangleTargetWidth, setRectangleTargetWidth] = useState(1200);
   const [rectangleTargetHeight, setRectangleTargetHeight] = useState(1200);
-  const [mode, setMode] = useState<Mode>("guides");
+  const [customGuideColumns, setCustomGuideColumns] = useState(2);
+  const [customGuideRows, setCustomGuideRows] = useState(2);
+  const [selectedFileLabel, setSelectedFileLabel] = useState("No file selected");
+  const [isDragActive, setIsDragActive] = useState(false);
+  const [locale, setLocale] = useState<Locale>("en");
+  const [mode, setMode] = useState<Mode>("rectangle");
   const [freehandRegions, setFreehandRegions] = useState<FreehandRegion[]>([]);
   const [rectRegions, setRectRegions] = useState<RectRegion[]>([]);
   const [draftFreehandPoints, setDraftFreehandPoints] = useState<Point[]>([]);
@@ -595,6 +877,9 @@ export default function App() {
     endY: number;
   } | null>(null);
   const [savedPieces, setSavedPieces] = useState<SavedPiece[]>([]);
+  const [sliceUploads, setSliceUploads] = useState<Record<string, SliceUploadState>>({});
+  const [autoUploadEnabled, setAutoUploadEnabled] = useState(false);
+  const [appNotice, setAppNotice] = useState<AppNotice>(null);
   const [cleanupPieceKey, setCleanupPieceKey] = useState<string | null>(null);
   const [cleanupFillColor, setCleanupFillColor] = useState("#ffffff");
   const [cleanupBrushSize, setCleanupBrushSize] = useState(28);
@@ -607,15 +892,62 @@ export default function App() {
   const cleanupCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cleanupLastPointRef = useRef<Point | null>(null);
   const cleanupOriginalCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const noticeTimeoutRef = useRef<number | null>(null);
 
   function applyRectanglePreset(width: number, height: number) {
     setRectangleTargetWidth(width);
     setRectangleTargetHeight(height);
   }
 
+  const t = translations[locale];
+  const quickGridText = {
+    threeByThree: locale === "he" ? "3 על 3" : "3 x 3",
+    fourByFour: locale === "he" ? "4 על 4" : "4 x 4",
+    customGrid: locale === "he" ? "גריד מותאם" : "Custom grid",
+    applyGrid: locale === "he" ? "החל גריד" : "Apply grid",
+  };
+  const deleteEverythingText = locale === "he" ? "מחק הכול" : "Delete Everything";
+  const confirmDeleteAllText = locale === "he" ? "למחוק הכול ולהתחיל מחדש?" : "Delete everything and start over?";
+  const clearPrimaryImageText = locale === "he" ? "מחק תמונה ראשית" : "Delete main image";
+  const clearCutImagesText = locale === "he" ? "מחק תמונות חתוכות" : "Delete cut images";
+  const confirmClearPrimaryText =
+    locale === "he"
+      ? "למחוק את התמונה הראשית בלבד? התמונות שנוצרו יישארו."
+      : "Delete only the main image? The generated pieces will stay.";
+  const confirmClearCutImagesText =
+    locale === "he"
+      ? "למחוק את כל התמונות החתוכות בלבד? התמונה הראשית תישאר."
+      : "Delete only the cut images? The main image will stay.";
+
+  function showNotice(text: string, tone: AppNoticeTone) {
+    setAppNotice({ text, tone });
+    if (noticeTimeoutRef.current) {
+      window.clearTimeout(noticeTimeoutRef.current);
+    }
+    noticeTimeoutRef.current = window.setTimeout(() => {
+      setAppNotice(null);
+    }, 2600);
+  }
+
+  function selectMode(nextMode: Mode) {
+    setMode(nextMode);
+    if (nextMode !== "guides") {
+      setIsEditingGuides(false);
+    }
+  }
+
   const getPieceName = (piece: OutputPiece, index: number) => {
     const customName = pieceNames[piece.key]?.trim();
-    return customName || `${fileName}-${index + 1}`;
+    if (customName) {
+      return slugifyName(customName);
+    }
+
+    return `${slugifyName(fileName)}-${index + 1}`;
+  };
+
+  const getPieceAltText = (piece: OutputPiece, index: number) => {
+    const customName = pieceNames[piece.key]?.trim();
+    return customName || getPieceName(piece, index);
   };
 
   const upscaleDataUrl = async (dataUrl: string, scaleFactor: number) => {
@@ -643,6 +975,9 @@ export default function App() {
     return () => {
       if (imageSrc?.startsWith("blob:")) {
         URL.revokeObjectURL(imageSrc);
+      }
+      if (noticeTimeoutRef.current) {
+        window.clearTimeout(noticeTimeoutRef.current);
       }
     };
   }, [imageSrc]);
@@ -732,6 +1067,7 @@ export default function App() {
           };
 
           setEditedPieceDataUrls({});
+          setIsEditingGuides(false);
           setFreehandRegions((prev) => [...prev, region]);
         }
 
@@ -747,6 +1083,7 @@ export default function App() {
 
         if (width > 4 && height > 4) {
           setEditedPieceDataUrls({});
+          setIsEditingGuides(false);
           setRectRegions((prev) => [
             ...prev,
             {
@@ -776,25 +1113,6 @@ export default function App() {
       window.removeEventListener("mouseup", onUp);
     };
   }, [draftFreehandPoints, draftRectSelection, dragging, imageEl, isDrawingFreehand, mode]);
-
-  useEffect(() => {
-    if (!imageEl) {
-      setCommittedVerticalGuides([]);
-      setCommittedHorizontalGuides([]);
-      setIsEditingGuides(false);
-      return;
-    }
-
-    setIsEditingGuides(true);
-
-    const timeoutId = window.setTimeout(() => {
-      setCommittedVerticalGuides(sortUnique(verticalGuides, 1, imageEl.width - 1));
-      setCommittedHorizontalGuides(sortUnique(horizontalGuides, 1, imageEl.height - 1));
-      setIsEditingGuides(false);
-    }, dragging ? 220 : 500);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [dragging, horizontalGuides, imageEl, verticalGuides]);
 
   const gridSlices = useMemo(() => {
     if (!imageEl) {
@@ -887,6 +1205,46 @@ export default function App() {
     [baseOutputPieces, editedPieceDataUrls]
   );
 
+  const visibleAndSavedPieces = useMemo(() => {
+    return [...savedPieces, ...outputPieces.filter((piece) => !savedPieces.some((saved) => saved.key === piece.key))];
+  }, [outputPieces, savedPieces]);
+
+  useEffect(() => {
+    setSliceUploads((prev) => {
+      const next: Record<string, SliceUploadState> = {};
+
+      visibleAndSavedPieces.forEach((piece) => {
+        const existing = prev[piece.key];
+        const blob = dataUrlToBlob(piece.dataUrl);
+
+        next[piece.key] = {
+          previewUrl: piece.dataUrl,
+          blob,
+          uploadedUrl: existing?.uploadedUrl ?? null,
+          uploading: existing?.uploading ?? false,
+          error: existing?.error ?? null,
+        };
+      });
+
+      return next;
+    });
+  }, [visibleAndSavedPieces]);
+
+  useEffect(() => {
+    if (!autoUploadEnabled) {
+      return;
+    }
+
+    const nextPieceToUpload = visibleAndSavedPieces.find((piece) => {
+      const uploadState = sliceUploads[piece.key];
+      return uploadState && !uploadState.uploadedUrl && !uploadState.uploading;
+    });
+
+    if (nextPieceToUpload) {
+      void uploadPiece(nextPieceToUpload);
+    }
+  }, [autoUploadEnabled, sliceUploads, visibleAndSavedPieces]);
+
   const cleanupPiece = useMemo(
     () => outputPieces.find((piece) => piece.key === cleanupPieceKey) ?? null,
     [cleanupPieceKey, outputPieces]
@@ -953,8 +1311,7 @@ export default function App() {
     void loadCleanupOriginalPiece();
   }, [cleanupOriginalDataUrl, cleanupPiece]);
 
-  async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+  async function loadFile(file: File) {
     if (!file) {
       return;
     }
@@ -969,7 +1326,8 @@ export default function App() {
     setImageSrc(src);
     setImageEl(image);
     setFileName(baseName);
-    setVerticalGuides(getDefaultGuides(image.width, 3));
+    setSelectedFileLabel(file.name);
+    setVerticalGuides([]);
     setHorizontalGuides([]);
     setCommittedVerticalGuides([]);
     setCommittedHorizontalGuides([]);
@@ -980,10 +1338,33 @@ export default function App() {
     setFreehandRegions([]);
     setRectRegions([]);
     setSavedPieces([]);
+    setSliceUploads({});
     setDraftFreehandPoints([]);
     setDraftRectSelection(null);
     setSelectedGuide(null);
-    setMode("guides");
+    setMode("rectangle");
+  }
+
+  async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    await loadFile(file);
+    event.target.value = "";
+  }
+
+  async function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDragActive(false);
+
+    const file = event.dataTransfer.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    await loadFile(file);
   }
 
   function addGuide(type: "v" | "h") {
@@ -994,10 +1375,14 @@ export default function App() {
     if (type === "v") {
       setIsEditingGuides(true);
       setEditedPieceDataUrls({});
+      setCommittedVerticalGuides([]);
+      setCommittedHorizontalGuides([]);
       setVerticalGuides((prev) => sortUnique([...prev, Math.round(imageEl.width / 2)], 1, imageEl.width - 1));
     } else {
       setIsEditingGuides(true);
       setEditedPieceDataUrls({});
+      setCommittedVerticalGuides([]);
+      setCommittedHorizontalGuides([]);
       setHorizontalGuides((prev) =>
         sortUnique([...prev, Math.round(imageEl.height / 2)], 1, imageEl.height - 1)
       );
@@ -1012,6 +1397,8 @@ export default function App() {
 
       setIsEditingGuides(true);
       setEditedPieceDataUrls({});
+      setCommittedVerticalGuides([]);
+      setCommittedHorizontalGuides([]);
       setVerticalGuides((prev) => prev.slice(0, -1));
 
       if (selectedGuide?.type === "v") {
@@ -1027,6 +1414,8 @@ export default function App() {
 
     setIsEditingGuides(true);
     setEditedPieceDataUrls({});
+    setCommittedVerticalGuides([]);
+    setCommittedHorizontalGuides([]);
     setHorizontalGuides((prev) => prev.slice(0, -1));
 
     if (selectedGuide?.type === "h") {
@@ -1042,10 +1431,14 @@ export default function App() {
     if (selectedGuide.type === "v") {
       setIsEditingGuides(true);
       setEditedPieceDataUrls({});
+      setCommittedVerticalGuides([]);
+      setCommittedHorizontalGuides([]);
       setVerticalGuides((prev) => prev.filter((_, index) => index !== selectedGuide.index));
     } else {
       setIsEditingGuides(true);
       setEditedPieceDataUrls({});
+      setCommittedVerticalGuides([]);
+      setCommittedHorizontalGuides([]);
       setHorizontalGuides((prev) => prev.filter((_, index) => index !== selectedGuide.index));
     }
 
@@ -1059,6 +1452,7 @@ export default function App() {
 
     setImageSrc(null);
     setImageEl(null);
+    setSelectedFileLabel("No file selected");
     setVerticalGuides([]);
     setHorizontalGuides([]);
     setCommittedVerticalGuides([]);
@@ -1075,12 +1469,150 @@ export default function App() {
     setFreehandRegions([]);
     setRectRegions([]);
     setSavedPieces([]);
+    setSliceUploads({});
     setDraftFreehandPoints([]);
     setDraftRectSelection(null);
     setIsDrawingFreehand(false);
     setCleanupPieceKey(null);
-    setMode("guides");
+    setMode("rectangle");
   }
+
+  function clearPrimaryImageOnly() {
+    const shouldClear = window.confirm(confirmClearPrimaryText);
+    if (!shouldClear) {
+      return;
+    }
+
+    if (imageSrc?.startsWith("blob:")) {
+      URL.revokeObjectURL(imageSrc);
+    }
+
+    setSavedPieces((prev) => [
+      ...prev,
+      ...outputPieces
+        .filter((piece) => !prev.some((savedPiece) => savedPiece.key === piece.key))
+        .map((piece) => ({
+          ...piece,
+          savedAt: Date.now(),
+        })),
+    ]);
+    setImageSrc(null);
+    setImageEl(null);
+    setSelectedFileLabel("No file selected");
+    setVerticalGuides([]);
+    setHorizontalGuides([]);
+    setCommittedVerticalGuides([]);
+    setCommittedHorizontalGuides([]);
+    setDragging(null);
+    setSelectedGuide(null);
+    setScale(100);
+    setIsEditingGuides(false);
+    setEditedPieceDataUrls({});
+    setRemovedPieceKeys([]);
+    setFreehandRegions([]);
+    setRectRegions([]);
+    setDraftFreehandPoints([]);
+    setDraftRectSelection(null);
+    setIsDrawingFreehand(false);
+    setCleanupPieceKey(null);
+    setMode("rectangle");
+  }
+
+  function clearCutImagesOnly() {
+    const shouldClear = window.confirm(confirmClearCutImagesText);
+    if (!shouldClear) {
+      return;
+    }
+
+    setCommittedVerticalGuides([]);
+    setCommittedHorizontalGuides([]);
+    setIsEditingGuides(verticalGuides.length > 0 || horizontalGuides.length > 0);
+    setEditedPieceDataUrls({});
+    setRemovedPieceKeys([]);
+    setFreehandRegions([]);
+    setRectRegions([]);
+    setSavedPieces([]);
+    setSliceUploads({});
+    setDraftFreehandPoints([]);
+    setDraftRectSelection(null);
+    setIsDrawingFreehand(false);
+    setCleanupPieceKey(null);
+  }
+
+  function confirmClearWorkspace() {
+    const shouldClear = window.confirm(confirmDeleteAllText);
+    if (!shouldClear) {
+      return;
+    }
+
+    clearWorkspace();
+  }
+
+  const cuttingToolPanel = imageEl ? (
+    <div className="guide-generate-banner">
+      <div className="mode-picker-header">
+        <div>
+          <strong>{t.chooseYourCuttingTool}</strong>
+          <p>{t.chooseYourCuttingToolCopy}</p>
+        </div>
+        <span className="recommended-badge">{t.recommendedRectangle}</span>
+      </div>
+      <div className="mode-picker-grid">
+        <button
+          className={mode === "rectangle" ? "mode-choice-button mode-choice-button-active" : "mode-choice-button"}
+          onClick={() => selectMode("rectangle")}
+          title={t.rectangleCropCopy}
+        >
+          <strong>{t.rectangleCrop}</strong>
+          <span>{t.rectangleCropCopy}</span>
+        </button>
+        <button
+          className={mode === "freehand" ? "mode-choice-button mode-choice-button-active" : "mode-choice-button"}
+          onClick={() => selectMode("freehand")}
+          title={t.freehandDrawCopy}
+        >
+          <strong>{t.freehandDraw}</strong>
+          <span>{t.freehandDrawCopy}</span>
+        </button>
+        <button
+          className={mode === "guides" ? "mode-choice-button mode-choice-button-active" : "mode-choice-button"}
+          onClick={() => selectMode("guides")}
+          title={t.straightGuidesCopy}
+        >
+          <strong>{t.straightGuides}</strong>
+          <span>{t.straightGuidesCopy}</span>
+        </button>
+      </div>
+
+      {mode === "guides" ? (
+        <>
+          <div className="guide-action-grid">
+            <button title={t.addVertical} onClick={() => addGuide("v")}>
+              <Plus size={16} />
+              {t.addVertical}
+            </button>
+            <button title={t.addHorizontal} onClick={() => addGuide("h")}>
+              <Plus size={16} />
+              {t.addHorizontal}
+            </button>
+            <button title={t.removeVertical} onClick={() => removeLastGuide("v")} disabled={verticalGuides.length === 0}>
+              <Trash2 size={16} />
+              {t.removeVertical}
+            </button>
+            <button title={t.removeHorizontal} onClick={() => removeLastGuide("h")} disabled={horizontalGuides.length === 0}>
+              <Trash2 size={16} />
+              {t.removeHorizontal}
+            </button>
+          </div>
+          <button className="guide-generate-button" onClick={generateGuideSlices}>
+            <Grid2x2Plus size={20} />
+            {t.generateGuideSlices}
+          </button>
+          <p>{t.generateGuideSlicesCopy}</p>
+        </>
+      ) : null}
+    </div>
+  ) : null;
 
   function setPreset(columns: number, rows: number) {
     if (!imageEl) {
@@ -1089,10 +1621,28 @@ export default function App() {
 
     setIsEditingGuides(true);
     setEditedPieceDataUrls({});
+    setCommittedVerticalGuides([]);
+    setCommittedHorizontalGuides([]);
     setVerticalGuides(getDefaultGuides(imageEl.width, columns));
     setHorizontalGuides(getDefaultGuides(imageEl.height, rows));
     setSelectedGuide(null);
     setRemovedPieceKeys([]);
+  }
+
+  function applyCustomGuideGrid() {
+    setPreset(Math.max(1, customGuideColumns), Math.max(1, customGuideRows));
+  }
+
+  function generateGuideSlices() {
+    if (!imageEl) {
+      return;
+    }
+
+    setCommittedVerticalGuides(sortUnique(verticalGuides, 1, imageEl.width - 1));
+    setCommittedHorizontalGuides(sortUnique(horizontalGuides, 1, imageEl.height - 1));
+    setEditedPieceDataUrls({});
+    setRemovedPieceKeys((prev) => prev.filter((key) => !key.startsWith("grid-")));
+    setIsEditingGuides(false);
   }
 
   function removePieceByKey(key: string) {
@@ -1115,6 +1665,132 @@ export default function App() {
 
   function removeSavedPiece(key: string) {
     setSavedPieces((prev) => prev.filter((piece) => piece.key !== key));
+  }
+
+  async function uploadPiece(piece: OutputPiece) {
+    const uploadState = sliceUploads[piece.key];
+    if (!uploadState || uploadState.uploading) {
+      return;
+    }
+
+    setSliceUploads((prev) => ({
+      ...prev,
+      [piece.key]: {
+        ...prev[piece.key],
+        uploading: true,
+        error: null,
+      },
+    }));
+
+    try {
+      const uploadedUrl = await uploadToCloudinary(uploadState.blob);
+      setSliceUploads((prev) => ({
+        ...prev,
+        [piece.key]: {
+          ...prev[piece.key],
+          uploading: false,
+          uploadedUrl,
+          error: null,
+        },
+      }));
+      showNotice(t.uploadCompleted, "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Upload failed";
+      setSliceUploads((prev) => ({
+        ...prev,
+        [piece.key]: {
+          ...prev[piece.key],
+          uploading: false,
+          error: message,
+        },
+      }));
+      showNotice(message || t.uploadFailed, "error");
+    }
+  }
+
+  async function uploadAllPieces() {
+    for (const piece of visibleAndSavedPieces) {
+      const state = sliceUploads[piece.key];
+      if (state?.uploadedUrl || state?.uploading) {
+        continue;
+      }
+
+      await uploadPiece(piece);
+    }
+  }
+
+  async function copyUploadedLink(pieceKey: string) {
+    const uploadedUrl = sliceUploads[pieceKey]?.uploadedUrl;
+    if (!uploadedUrl) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(uploadedUrl);
+      showNotice(t.linkCopied, "success");
+    } catch {
+      showNotice(t.copyFailedManual, "error");
+    }
+  }
+
+  async function copyPieceHtml(piece: OutputPiece, index: number) {
+    const uploadedUrl = sliceUploads[piece.key]?.uploadedUrl;
+    if (!uploadedUrl) {
+      showNotice(t.noUploadedImagesYet, "error");
+      return;
+    }
+
+    const html = `<img src="${uploadedUrl}" alt="${getPieceAltText(piece, index)}" />`;
+
+    try {
+      await navigator.clipboard.writeText(html);
+      showNotice(t.htmlCopied, "success");
+    } catch {
+      showNotice(t.copyFailed, "error");
+    }
+  }
+
+  async function copyAllLinks() {
+    const uploadedUrls = visibleAndSavedPieces
+      .map((piece) => sliceUploads[piece.key]?.uploadedUrl)
+      .filter((url): url is string => Boolean(url));
+
+    if (uploadedUrls.length === 0) {
+      showNotice(t.noUploadedImagesYet, "error");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(uploadedUrls.join("\n"));
+      showNotice(t.allLinksCopied, "success");
+    } catch {
+      showNotice(t.copyFailed, "error");
+    }
+  }
+
+  async function copyAllHtml() {
+    const htmlLines = visibleAndSavedPieces
+      .map((piece, index) => {
+        const uploadedUrl = sliceUploads[piece.key]?.uploadedUrl;
+        if (!uploadedUrl) {
+          return null;
+        }
+
+        return `<img src="${uploadedUrl}" alt="${getPieceAltText(piece, index)}" />`;
+      })
+      .filter((line): line is string => Boolean(line));
+
+    if (htmlLines.length === 0) {
+      showNotice(t.noUploadedImagesYet, "error");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(htmlLines.join("\n"));
+      showNotice(t.allHtmlCopied, "success");
+    } catch {
+      showNotice(t.copyFailed, "error");
+    }
   }
 
   async function downloadPiece(piece: OutputPiece, index: number) {
@@ -1540,103 +2216,138 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
-      <section className="hero">
-        <div>
-          <p className="eyebrow">Image Slicer Tool</p>
-          <h1>Cut one image into clean PNG pieces in a few seconds.</h1>
-          <p className="hero-copy">
-            Upload an image, drag vertical and horizontal guides, preview the result, and export every slice
-            individually or as one ZIP.
-          </p>
-          <p className="hero-copy">
-            You can also switch to freehand mode, circle any shape with the mouse, and turn that selection into
-            a rectangular image.
-          </p>
+    <main className={`app-shell locale-${locale}`} dir={locale === "he" ? "rtl" : "ltr"}>
+      <button className="language-toggle" onClick={() => setLocale((prev) => (prev === "en" ? "he" : "en"))}>
+        {t.language}
+      </button>
+      <section className="hero hero-product">
+        <div className="hero-copy-block">
+          <div className="hero-brand-row">
+            <p className="eyebrow">Image Slicer Tool</p>
+            <span className="hero-inline-badge">{t.builtFor}</span>
+          </div>
+          <h1>{t.heroTitle}</h1>
+          <p className="hero-copy">{t.heroCopy}</p>
           {isEditingGuides && imageEl ? (
-            <p className="editing-note">Editing lines... slices will refresh automatically when you finish.</p>
+            <p className="editing-note">{t.editingNote}</p>
           ) : null}
         </div>
-        <div className="hero-stats">
+        <div className="hero-stats hero-stats-compact">
           <div className="stat-card">
-            <span>Slices</span>
+            <span>{t.slices}</span>
             <strong>{outputPieces.length + savedPieces.length}</strong>
           </div>
           <div className="stat-card">
-            <span>Guides</span>
+            <span>{t.guides}</span>
             <strong>{verticalGuides.length + horizontalGuides.length}</strong>
           </div>
           <div className="stat-card">
-            <span>Zoom</span>
+            <span>{t.zoom}</span>
             <strong>{scale}%</strong>
           </div>
         </div>
       </section>
 
       <section className="workspace">
-        <aside className="panel">
+        <aside className="panel control-panel">
+          <div className="panel-section-header">
+            <h2>{t.controls}</h2>
+            <p>{t.controlsCopy}</p>
+          </div>
           <div className="panel-block">
             <label className="field">
-              <span>Upload image</span>
-              <input type="file" accept="image/*" onChange={handleFileChange} />
-            </label>
-          </div>
-
-          <div className="panel-block">
-            <label className="field">
-              <span>Base file name</span>
-              <input value={fileName} onChange={(event) => setFileName(event.target.value || "image")} />
-            </label>
-          </div>
-
-          <div className="panel-block">
-            <span className="block-title">Cut mode</span>
-            <div className="button-row">
-              <button
-                className={mode === "guides" ? "active-mode-button" : ""}
-                onClick={() => setMode("guides")}
-                disabled={!imageEl}
-              >
-                Straight guides
+              <span>{t.uploadImage}</span>
+              <input
+                  ref={fileInputRef}
+                  className="hidden-file-input"
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                />
+                <button type="button" className="file-trigger-button" onClick={() => fileInputRef.current?.click()}>
+                  {t.chooseImageFile}
+                </button>
+                <span className="file-selected-label">
+                  {selectedFileLabel === "No file selected" ? t.noFileSelected : selectedFileLabel}
+                </span>
+              </label>
+            <div className="panel-delete-actions">
+              <button className="danger-button" onClick={clearPrimaryImageOnly} disabled={!imageEl && !imageSrc}>
+                <Trash2 size={16} />
+                {clearPrimaryImageText}
               </button>
               <button
-                className={mode === "freehand" ? "active-mode-button" : ""}
-                onClick={() => setMode("freehand")}
-                disabled={!imageEl}
+                className="danger-button"
+                onClick={clearCutImagesOnly}
+                disabled={outputPieces.length === 0 && savedPieces.length === 0}
               >
-                Freehand draw
+                <Trash2 size={16} />
+                {clearCutImagesText}
               </button>
               <button
-                className={mode === "rectangle" ? "active-mode-button" : ""}
-                onClick={() => setMode("rectangle")}
-                disabled={!imageEl}
+                className="danger-button danger-button-strong"
+                onClick={confirmClearWorkspace}
+                disabled={!imageEl && outputPieces.length === 0 && savedPieces.length === 0}
               >
-                Rectangle crop
+                <Trash2 size={16} />
+                {deleteEverythingText}
               </button>
             </div>
           </div>
 
           <div className="panel-block">
-            <span className="block-title">Quick presets</span>
+            <label className="field">
+              <span>{t.baseFileName}</span>
+              <input value={fileName} onChange={(event) => setFileName(event.target.value || "image")} />
+            </label>
+          </div>
+
+          <div className="panel-block">
+            <span className="block-title">{t.quickPresets}</span>
             <div className="button-grid">
-              <button onClick={() => setPreset(2, 1)} disabled={!imageEl || mode !== "guides"}>
-                2 columns
-              </button>
-              <button onClick={() => setPreset(3, 1)} disabled={!imageEl || mode !== "guides"}>
-                3 columns
-              </button>
               <button onClick={() => setPreset(2, 2)} disabled={!imageEl || mode !== "guides"}>
-                2 x 2
+                {t.twoByTwo}
               </button>
-              <button onClick={() => setPreset(3, 2)} disabled={!imageEl || mode !== "guides"}>
-                3 x 2
+                <button onClick={() => setPreset(3, 3)} disabled={!imageEl || mode !== "guides"}>
+                  {quickGridText.threeByThree}
+                </button>
+                <button onClick={() => setPreset(4, 4)} disabled={!imageEl || mode !== "guides"}>
+                  {quickGridText.fourByFour}
+                </button>
+              </div>
+              <div className="custom-grid-panel">
+              <span className="custom-grid-title">{quickGridText.customGrid}</span>
+              <div className="custom-grid-inputs">
+                <label className="field">
+                  <span>{t.width}</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    value={customGuideColumns}
+                    onChange={(event) => setCustomGuideColumns(Math.max(1, Number(event.target.value) || 1))}
+                  />
+                </label>
+                <label className="field">
+                  <span>{t.height}</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    value={customGuideRows}
+                    onChange={(event) => setCustomGuideRows(Math.max(1, Number(event.target.value) || 1))}
+                  />
+                </label>
+              </div>
+              <button onClick={applyCustomGuideGrid} disabled={!imageEl || mode !== "guides"}>
+                {quickGridText.applyGrid}
               </button>
             </div>
           </div>
 
           {mode === "rectangle" ? (
             <div className="panel-block">
-              <span className="block-title">Rectangle Output Size</span>
+              <span className="block-title">{t.rectangleOutputSize}</span>
               <div className="rectangle-preset-list">
                 {RECTANGLE_SIZE_PRESETS.map((preset) => (
                   <button
@@ -1654,7 +2365,7 @@ export default function App() {
                 ))}
               </div>
               <label className="field">
-                <span>Width</span>
+                <span>{t.width}</span>
                 <input
                   type="number"
                   min="200"
@@ -1664,7 +2375,7 @@ export default function App() {
                 />
               </label>
               <label className="field">
-                <span>Height</span>
+                <span>{t.height}</span>
                 <input
                   type="number"
                   min="200"
@@ -1677,47 +2388,20 @@ export default function App() {
           ) : null}
 
           <div className="panel-block">
-            <span className="block-title">Guides</span>
-            <div className="button-row">
-              <button onClick={() => addGuide("v")} disabled={!imageEl || mode !== "guides"}>
-                <Plus size={16} />
-                Add vertical
-              </button>
-              <button onClick={() => addGuide("h")} disabled={!imageEl || mode !== "guides"}>
-                <Plus size={16} />
-                Add horizontal
-              </button>
-            </div>
-            <div className="button-row">
-              <button onClick={() => removeLastGuide("v")} disabled={!imageEl || mode !== "guides" || verticalGuides.length === 0}>
-                <Trash2 size={16} />
-                Remove vertical
-              </button>
-              <button
-                onClick={() => removeLastGuide("h")}
-                disabled={!imageEl || mode !== "guides" || horizontalGuides.length === 0}
-              >
-                <Trash2 size={16} />
-                Remove horizontal
-              </button>
-            </div>
+            <span className="block-title">{t.guidesTitle}</span>
             <button
               className="danger-button"
               onClick={deleteSelectedGuide}
               disabled={!selectedGuide || mode !== "guides"}
             >
               <Trash2 size={16} />
-              Delete selected guide
-            </button>
-            <button className="danger-button" onClick={clearWorkspace} disabled={!imageEl && !imageSrc}>
-              <Trash2 size={16} />
-              Clear image and reset
+              {t.deleteSelectedGuide}
             </button>
           </div>
 
           <div className="panel-block">
             <label className="field">
-              <span>Preview zoom: {scale}%</span>
+              <span>{t.previewZoom}: {scale}%</span>
               <input
                 type="range"
                 min="30"
@@ -1730,12 +2414,16 @@ export default function App() {
           </div>
 
           <div className="panel-block export-block">
+            <div className="panel-subsection-title">
+              <strong>{t.globalActions}</strong>
+              <span>{t.globalActionsCopy}</span>
+            </div>
             <label className="field">
-              <span>Export quality</span>
+              <span>{t.exportQuality}</span>
               <select value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}>
-                <option value={1}>Standard 1x</option>
-                <option value={2}>Enhanced 2x</option>
-                <option value={3}>Enhanced 3x</option>
+                <option value={1}>{t.standard1x}</option>
+                <option value={2}>{t.enhanced2x}</option>
+                <option value={3}>{t.enhanced3x}</option>
               </select>
             </label>
             <button
@@ -1744,57 +2432,83 @@ export default function App() {
               disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
             >
               <Download size={16} />
-              Download All PNGs
+              {t.downloadAllPngs}
             </button>
+            <button
+              className="primary-button"
+              onClick={uploadAllPieces}
+              disabled={visibleAndSavedPieces.length === 0}
+            >
+              <Download size={16} />
+              {t.uploadAllCloudinary}
+            </button>
+            <div className="bulk-action-grid">
+              <button onClick={copyAllLinks} disabled={visibleAndSavedPieces.length === 0}>
+                <Copy size={16} />
+                {t.copyAllLinks}
+              </button>
+              <button onClick={copyAllHtml} disabled={visibleAndSavedPieces.length === 0}>
+                <Copy size={16} />
+                {t.copyAllHtml}
+              </button>
+            </div>
+            <label className="auto-upload-toggle">
+              <input
+                type="checkbox"
+                checked={autoUploadEnabled}
+                onChange={(event) => setAutoUploadEnabled(event.target.checked)}
+              />
+              <span>{t.autoUpload}</span>
+            </label>
             <button
               className="primary-button"
               onClick={downloadZip}
               disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
             >
               <Download size={16} />
-              {isExportingZip ? "Building ZIP..." : "Download ZIP"}
+              {isExportingZip ? t.buildingZip : t.downloadZip}
             </button>
               <p className="hint">
                 {mode === "guides"
-                  ? "Tip: click a guide to select it, then remove it if you need to adjust the layout."
+                  ? t.guidesHint
                   : mode === "freehand"
-                    ? "Tip: press and drag around the object. When you release the mouse, a rectangular cutout is created."
-                    : "Tip: drag a rectangle around the object. The result will be centered inside your fixed output size with matching background color."}
+                    ? t.freehandHint
+                    : t.rectangleHint}
               </p>
             </div>
         </aside>
 
         <section className="main-panel">
-          <div className="canvas-card">
+          <div className="canvas-card preview-card">
             <div className="canvas-header">
               <div>
-                <h2>Live preview</h2>
+                <h2>{t.livePreview}</h2>
                 <p>
                   {mode === "guides"
-                    ? "Drag the cut lines directly on the image."
+                    ? t.guidesPreviewCopy
                     : mode === "freehand"
-                      ? "Draw freely around any object you want to extract."
-                      : "Drag a rectangle around the object you want to cut automatically."}
+                      ? t.freehandPreviewCopy
+                      : t.rectanglePreviewCopy}
                 </p>
               </div>
               <div className="legend">
                 <span>
                   <Move size={14} />
-                  Drag guides
+                  {t.dragGuides}
                 </span>
                 <span>
                   <Scissors size={14} />
-                  Freehand selection
+                  {t.freehandSelection}
                 </span>
                 <span>
                   <Grid2x2Plus size={14} />
-                  Mixed output
+                  {t.mixedOutput}
                 </span>
               </div>
             </div>
 
             {imageSrc && imageEl ? (
-              <div className="preview-stage">
+              <div className="preview-stage preview-stage-elevated">
                 <div
                   ref={previewRef}
                   className={`preview-frame ${mode === "freehand" ? "freehand-mode" : ""}`}
@@ -1813,7 +2527,7 @@ export default function App() {
                         style={{ left: `${(guide / imageEl.width) * 100}%` }}
                         onMouseDown={() => setDragging({ type: "v", index })}
                         onClick={() => setSelectedGuide({ type: "v", index })}
-                        title={`Vertical guide ${index + 1}`}
+                        title={`${t.verticalGuideTitle} ${index + 1}`}
                       />
                     ))}
 
@@ -1827,7 +2541,7 @@ export default function App() {
                         style={{ top: `${(guide / imageEl.height) * 100}%` }}
                         onMouseDown={() => setDragging({ type: "h", index })}
                         onClick={() => setSelectedGuide({ type: "h", index })}
-                        title={`Horizontal guide ${index + 1}`}
+                        title={`${t.horizontalGuideTitle} ${index + 1}`}
                       />
                     ))}
 
@@ -1857,24 +2571,134 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <div className="empty-state">
+              <div
+                className={`empty-state empty-upload-state ${isDragActive ? "empty-upload-state-active" : ""}`}
+                onClick={() => fileInputRef.current?.click()}
+                onDragEnter={(event) => {
+                  event.preventDefault();
+                  setIsDragActive(true);
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setIsDragActive(true);
+                }}
+                onDragLeave={(event) => {
+                  event.preventDefault();
+                  if (event.currentTarget === event.target) {
+                    setIsDragActive(false);
+                  }
+                }}
+                onDrop={handleDrop}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    fileInputRef.current?.click();
+                  }
+                }}
+              >
                 <ImageIcon size={42} />
-                <h3>No image loaded yet</h3>
-                <p>Upload a JPG or PNG to start slicing.</p>
+                <h3>{t.dropImageTitle}</h3>
+                <p>{t.dropImageCopy}</p>
+                <button
+                  type="button"
+                  className="empty-state-upload-button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    fileInputRef.current?.click();
+                  }}
+                >
+                  {t.chooseImageFile}
+                </button>
               </div>
             )}
           </div>
 
-          <div className="slices-card">
+          {imageEl && outputPieces.length > 0 ? (
+            <div className="live-output-banner">
+              <div className="live-output-copy">
+                <strong>{t.outputPieces}</strong>
+                <span>
+                  {outputPieces.length} {t.pngReady}
+                </span>
+              </div>
+              <div className="live-output-flow-grid">
+                {[...outputPieces].reverse().map((piece, index) => (
+                  <div key={`${piece.key}-live-${index}`} className="live-output-mini-card">
+                    <img src={piece.dataUrl} alt={piece.label} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {visibleAndSavedPieces.length > 0 ? (
+            <div className="floating-bulk-actions floating-bulk-actions-near-preview">
+              <div className="floating-bulk-header">
+                <strong>{t.globalActions}</strong>
+                <span>{t.globalActionsCopy}</span>
+              </div>
+              <div className="floating-bulk-grid">
+                <button
+                  className="primary-button floating-action-button"
+                  onClick={downloadAllPngs}
+                  disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
+                >
+                  <Download size={18} />
+                  {t.downloadAllPngs}
+                </button>
+                <button
+                  className="primary-button floating-action-button"
+                  onClick={uploadAllPieces}
+                  disabled={visibleAndSavedPieces.length === 0}
+                >
+                  <Download size={18} />
+                  {t.uploadAllCloudinary}
+                </button>
+                <button className="floating-action-button" onClick={copyAllLinks} disabled={visibleAndSavedPieces.length === 0}>
+                  <Copy size={18} />
+                  {t.copyAllLinks}
+                </button>
+                <button className="floating-action-button" onClick={copyAllHtml} disabled={visibleAndSavedPieces.length === 0}>
+                  <Copy size={18} />
+                  {t.copyAllHtml}
+                </button>
+                <button
+                  className="primary-button floating-action-button"
+                  onClick={downloadZip}
+                  disabled={outputPieces.length + savedPieces.length === 0 || isExportingZip}
+                >
+                  <Download size={18} />
+                  {isExportingZip ? t.buildingZip : t.downloadZip}
+                </button>
+              </div>
+              <label className="auto-upload-toggle floating-auto-upload-toggle">
+                <input
+                  type="checkbox"
+                  checked={autoUploadEnabled}
+                  onChange={(event) => setAutoUploadEnabled(event.target.checked)}
+                />
+                <span>{t.autoUpload}</span>
+              </label>
+            </div>
+          ) : null}
+
+          <div className="slices-card output-section-card">
+            {appNotice ? (
+              <div className={`app-notice app-notice-${appNotice?.tone ?? "info"}`}>{appNotice.text}</div>
+            ) : null}
+            {imageEl && outputPieces.length === 0 && savedPieces.length === 0 ? cuttingToolPanel : null}
+
             <div className="canvas-header">
               <div>
-                <h2>Output pieces</h2>
+                <h2>{t.outputPieces}</h2>
                 <p>
                   {isEditingGuides && imageEl && mode === "guides"
-                    ? "Finish adjusting the guides and the slices will be created automatically."
+                    ? t.guideSlicesWaiting
                     : outputPieces.length > 0
-                      ? `${outputPieces.length} PNG slices ready for export.`
-                      : "Your slices will appear here after a cut layout is complete."}
+                      ? `${outputPieces.length} ${t.pngReady}`
+                      : t.slicesAppearLater}
                 </p>
               </div>
             </div>
@@ -1883,19 +2707,19 @@ export default function App() {
               <div className="cleanup-editor">
                 <div className="cleanup-header">
                   <div>
-                    <strong>Cleanup {cleanupPiece.label}</strong>
-                    <p>Pick a tool, then either paint with a chosen color or mark an area for non-AI completion from the original piece.</p>
+                    <strong>{t.cleanup} {cleanupPiece.label}</strong>
+                    <p>{t.cleanupCopy}</p>
                   </div>
                   <div className="cleanup-actions">
                     <button onClick={undoCleanupAction} disabled={cleanupHistory.length === 0}>
-                      Undo last edit
+                      {t.undoLastEdit}
                     </button>
-                    <button onClick={resetCleanup}>Reset piece</button>
-                    <button onClick={centerCleanupSubject}>Center subject</button>
-                    <button onClick={expandCleanupSubject}>Complete without AI</button>
-                    <button onClick={() => setCleanupPieceKey(null)}>Cancel</button>
+                    <button onClick={resetCleanup}>{t.resetPiece}</button>
+                    <button onClick={centerCleanupSubject}>{t.centerSubject}</button>
+                    <button onClick={expandCleanupSubject}>{t.completeWithoutAi}</button>
+                    <button onClick={() => setCleanupPieceKey(null)}>{t.cancel}</button>
                     <button className="primary-button cleanup-save-button" onClick={saveCleanup}>
-                      Save cleanup
+                      {t.saveCleanup}
                     </button>
                   </div>
                 </div>
@@ -1904,17 +2728,17 @@ export default function App() {
                     className={cleanupTool === "paint" ? "active-mode-button" : ""}
                     onClick={() => setCleanupTool("paint")}
                   >
-                    Paint color
+                    {t.paintColor}
                   </button>
                   <button
                     className={cleanupTool === "complete" ? "active-mode-button" : ""}
                     onClick={() => setCleanupTool("complete")}
                   >
-                    Complete selected area
+                    {t.completeSelectedArea}
                   </button>
                 </div>
                 <label className="field cleanup-field">
-                  <span>Fill color</span>
+                  <span>{t.fillColor}</span>
                   <input
                     className="cleanup-color-input"
                     type="color"
@@ -1924,7 +2748,7 @@ export default function App() {
                   />
                 </label>
                 <label className="field cleanup-field">
-                  <span>Brush size: {cleanupBrushSize}px</span>
+                  <span>{t.brushSize}: {cleanupBrushSize}px</span>
                   <input
                     type="range"
                     min="8"
@@ -1964,37 +2788,71 @@ export default function App() {
               <div className="saved-pieces-block">
                 <div className="canvas-header">
                   <div>
-                    <h2>Saved pieces</h2>
-                    <p>These pieces stay here even if you change guides or create new cuts.</p>
+                    <h2>{t.savedPieces}</h2>
+                    <p>{t.savedPiecesCopy}</p>
                   </div>
                 </div>
                 <div className="slice-grid">
                   {savedPieces.map((piece, index) => (
-                    <article key={`${piece.key}-saved-${index}`} className="slice-tile saved-piece-tile">
+                    <article key={`${piece.key}-saved-${index}`} className="slice-tile saved-piece-tile output-card">
                       <div className="slice-preview">
                         <img src={piece.dataUrl} alt={piece.label} />
                       </div>
-                      <div className="slice-meta">
-                        <strong>{piece.label}</strong>
+                      <div className="slice-meta slice-meta-stacked">
+                        <div>
+                          <strong>{piece.label}</strong>
+                          <span className="slice-dimension-chip">
+                            {t.savedPiece}
+                          </span>
+                        </div>
                         <span>
                           {piece.width} x {piece.height}px
                         </span>
                       </div>
                       <label className="field piece-name-field">
-                        <span>Image name</span>
+                        <span>{t.imageName}</span>
                         <input
                           value={pieceNames[piece.key] ?? ""}
                           onChange={(event) => updatePieceName(piece.key, event.target.value)}
                           placeholder={getPieceName(piece, index)}
                         />
                       </label>
-                      <button onClick={() => downloadPiece(piece, index)}>
+                      <button className="primary-inline-button" onClick={() => downloadPiece(piece, index)}>
                         <Download size={14} />
-                        Download PNG
+                        {t.download}
                       </button>
+                      <div className="piece-action-grid">
+                        <button
+                          onClick={() => uploadPiece(piece)}
+                          disabled={sliceUploads[piece.key]?.uploading}
+                        >
+                          <Download size={14} />
+                          {sliceUploads[piece.key]?.uploading ? "Uploading..." : t.upload}
+                        </button>
+                        <button
+                          onClick={() => copyUploadedLink(piece.key)}
+                          disabled={!sliceUploads[piece.key]?.uploadedUrl}
+                        >
+                          <Copy size={14} />
+                          {t.copyLink}
+                        </button>
+                        <button
+                          onClick={() => copyPieceHtml(piece, index)}
+                          disabled={!sliceUploads[piece.key]?.uploadedUrl}
+                        >
+                          <Copy size={14} />
+                          {t.copyHtml}
+                        </button>
+                      </div>
+                      {sliceUploads[piece.key]?.uploadedUrl ? (
+                        <p className="slice-upload-link">{sliceUploads[piece.key]?.uploadedUrl}</p>
+                      ) : null}
+                      {sliceUploads[piece.key]?.error ? (
+                        <p className="slice-upload-status">{sliceUploads[piece.key]?.error}</p>
+                      ) : null}
                       <button className="slice-delete-button" onClick={() => removeSavedPiece(piece.key)}>
                         <Trash2 size={14} />
-                        Remove saved
+                        {t.removeSaved}
                       </button>
                     </article>
                   ))}
@@ -2003,58 +2861,95 @@ export default function App() {
             ) : null}
 
             <div className="slice-grid">
-              {!isEditingGuides &&
+              {(!(mode === "guides" && isEditingGuides)) &&
                 imageEl &&
                 outputPieces.map((piece, index) => (
-                  <article key={`${piece.key}-${index}`} className="slice-tile">
+                  <article key={`${piece.key}-${index}`} className="slice-tile output-card">
                     <div className="slice-preview">
                       <img src={piece.dataUrl} alt={`${piece.label} ${index + 1}`} />
                     </div>
-                    <div className="slice-meta">
-                      <strong>{piece.label}</strong>
+                    <div className="slice-meta slice-meta-stacked">
+                      <div>
+                        <strong>{piece.label}</strong>
+                        <span className="slice-dimension-chip">{t.readyToExport}</span>
+                      </div>
                       <span>
                         {piece.width} x {piece.height}px
                       </span>
                     </div>
                     <label className="field piece-name-field">
-                      <span>Image name</span>
+                      <span>{t.imageName}</span>
                       <input
                         value={pieceNames[piece.key] ?? ""}
                         onChange={(event) => updatePieceName(piece.key, event.target.value)}
                         placeholder={getPieceName(piece, index)}
                       />
                     </label>
-                    <button onClick={() => downloadPiece(piece, index)}>
+                    <button className="primary-inline-button" onClick={() => downloadPiece(piece, index)}>
                       <Download size={14} />
-                      Download PNG
+                      {t.download}
                     </button>
+                    <div className="piece-action-grid">
+                      <button
+                        onClick={() => uploadPiece(piece)}
+                        disabled={sliceUploads[piece.key]?.uploading}
+                      >
+                        <Download size={14} />
+                        {sliceUploads[piece.key]?.uploading ? "Uploading..." : t.upload}
+                      </button>
+                      <button
+                        onClick={() => copyUploadedLink(piece.key)}
+                        disabled={!sliceUploads[piece.key]?.uploadedUrl}
+                      >
+                        <Copy size={14} />
+                        {t.copyLink}
+                      </button>
+                      <button
+                        onClick={() => copyPieceHtml(piece, index)}
+                        disabled={!sliceUploads[piece.key]?.uploadedUrl}
+                      >
+                        <Copy size={14} />
+                        {t.copyHtml}
+                      </button>
+                    </div>
+                    {sliceUploads[piece.key]?.uploadedUrl ? (
+                      <p className="slice-upload-link">{sliceUploads[piece.key]?.uploadedUrl}</p>
+                    ) : null}
+                    {sliceUploads[piece.key]?.error ? (
+                      <p className="slice-upload-status">{sliceUploads[piece.key]?.error}</p>
+                    ) : null}
                     <button onClick={() => keepPiece(piece)} disabled={savedPieces.some((savedPiece) => savedPiece.key === piece.key)}>
                       <Plus size={14} />
-                      {savedPieces.some((savedPiece) => savedPiece.key === piece.key) ? "Saved" : "Keep piece"}
+                      {savedPieces.some((savedPiece) => savedPiece.key === piece.key) ? t.saved : t.keepPiece}
                     </button>
                     <button onClick={() => setCleanupPieceKey(piece.key)}>
                       <Scissors size={14} />
-                      Cleanup
+                      {t.cleanup}
                     </button>
                     <button className="slice-delete-button" onClick={() => removePieceByKey(piece.key)}>
                       <Trash2 size={14} />
-                      Remove piece
+                      {t.removePiece}
                     </button>
                   </article>
                 ))}
-              {!isEditingGuides && imageEl && outputPieces.length === 0 ? (
+              {(!(mode === "guides" && isEditingGuides)) && imageEl && outputPieces.length === 0 ? (
                 <div className="slice-placeholder">
                   {mode === "guides"
-                    ? "Add at least one guide to create closed cut areas inside the image frame."
-                    : "Draw around any object with the mouse, and the selected shape will be exported inside a rectangular image."}
+                    ? t.addGuidePlaceholder
+                    : t.freehandPlaceholder}
                 </div>
               ) : null}
               {isEditingGuides && imageEl && mode === "guides" ? (
                 <div className="slice-placeholder">
-                  Waiting for you to finish editing the guides before generating the image pieces.
+                  {t.guidesWaiting}
                 </div>
               ) : null}
             </div>
+            {imageEl && (outputPieces.length > 0 || savedPieces.length > 0) ? (
+              <div className="cutting-tool-panel-bottom">
+                {cuttingToolPanel}
+              </div>
+            ) : null}
           </div>
         </section>
       </section>
