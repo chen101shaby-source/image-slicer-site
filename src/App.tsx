@@ -86,7 +86,7 @@ const RECTANGLE_SIZE_PRESETS = [
 
 const MAX_PIECES_PER_IMAGE = 30;
 const MAX_SAVED_PIECES = 150;
-const MAX_UPLOAD_FILE_BYTES = 7 * 1024 * 1024;
+const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024;
 
 type CleanupTool = "paint" | "complete";
 type Locale = "en" | "he";
@@ -1137,7 +1137,7 @@ export default function App() {
       ? "למחוק את כל התמונות החתוכות בלבד? התמונה הראשית תישאר."
       : "Delete only the cut images? The main image will stay.";
 
-  const fileTooLargeText = locale === "he" ? "גודל התמונה המקסימלי הוא 7MB." : "The maximum image size is 7MB.";
+  const fileTooLargeText = locale === "he" ? "גודל התמונה המקסימלי הוא 10MB." : "The maximum image size is 10MB.";
   const perImageLimitText =
     locale === "he"
       ? `אפשר ליצור עד ${MAX_PIECES_PER_IMAGE} חיתוכים לכל תמונה.`
